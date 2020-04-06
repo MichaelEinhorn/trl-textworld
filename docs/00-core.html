@@ -169,7 +169,7 @@ description: "A set of utility functions used throughout the library."
 
 <div class="inner_cell">
     <div class="input_area">
-<div class=" highlight hl-ipython3"><pre><span></span><span class="k">def</span> <span class="nf">pad_to_size_left</span><span class="p">(</span><span class="n">tensor</span><span class="p">,</span> <span class="n">size</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">padding</span><span class="o">=</span><span class="mi">50256</span><span class="p">,</span> <span class="n">side</span><span class="o">=</span><span class="s1">&#39;right&#39;</span><span class="p">):</span>
+<div class=" highlight hl-ipython3"><pre><span></span><span class="k">def</span> <span class="nf">pad_to_size</span><span class="p">(</span><span class="n">tensor</span><span class="p">,</span> <span class="n">size</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">padding</span><span class="o">=</span><span class="mi">50256</span><span class="p">,</span> <span class="n">side</span><span class="o">=</span><span class="s1">&#39;right&#39;</span><span class="p">):</span>
     <span class="sd">&quot;&quot;&quot;Pad tensor to size.&quot;&quot;&quot;</span>
     <span class="n">t_size</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">size</span><span class="p">()[</span><span class="n">dim</span><span class="p">]</span>
     <span class="k">if</span> <span class="n">t_size</span><span class="o">==</span><span class="n">size</span><span class="p">:</span>
@@ -250,7 +250,7 @@ description: "A set of utility functions used throughout the library."
 
 
 <div class="output_markdown rendered_html output_subarea ">
-<h4 id="pad_to_size_left" class="doc_header"><code>pad_to_size_left</code><a href="https://github.com/lvwerra/trl/tree/master/trl/core.py#L42" class="source_link" style="float:right">[source]</a></h4><blockquote><p><code>pad_to_size_left</code>(<strong><code>tensor</code></strong>, <strong><code>size</code></strong>, <strong><code>dim</code></strong>=<em><code>1</code></em>, <strong><code>padding</code></strong>=<em><code>50256</code></em>, <strong><code>side</code></strong>=<em><code>'right'</code></em>)</p>
+<h4 id="pad_to_size" class="doc_header"><code>pad_to_size</code><a href="https://github.com/lvwerra/trl/tree/master/trl/core.py#L42" class="source_link" style="float:right">[source]</a></h4><blockquote><p><code>pad_to_size</code>(<strong><code>tensor</code></strong>, <strong><code>size</code></strong>, <strong><code>dim</code></strong>=<em><code>1</code></em>, <strong><code>padding</code></strong>=<em><code>50256</code></em>, <strong><code>side</code></strong>=<em><code>'right'</code></em>)</p>
 </blockquote>
 <p>Pad tensor to size.</p>
 
