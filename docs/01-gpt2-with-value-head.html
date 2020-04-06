@@ -475,12 +475,12 @@ description: "A GPT2 model with a value head built on the `transformer` library 
 
 <div class="inner_cell">
     <div class="input_area">
-<div class=" highlight hl-ipython3"><pre><span></span><span class="k">def</span> <span class="nf">respond_to_batch</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">queries</span><span class="p">,</span> <span class="n">txt_len</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span> <span class="n">top_k</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">top_p</span><span class="o">=</span><span class="mf">1.0</span><span class="p">):</span>
+<div class=" highlight hl-ipython3"><pre><span></span><span class="k">def</span> <span class="nf">respond_to_batch</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">queries</span><span class="p">,</span> <span class="n">attention_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">txt_len</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span> <span class="n">top_k</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">top_p</span><span class="o">=</span><span class="mf">1.0</span><span class="p">):</span>
     <span class="sd">&quot;&quot;&quot;Sample text from language model.&quot;&quot;&quot;</span>
     <span class="n">input_ids</span> <span class="o">=</span> <span class="n">queries</span>
     <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">txt_len</span><span class="p">):</span>
         <span class="c1"># Get Logits</span>
-        <span class="n">outputs</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">input_ids</span><span class="p">)</span>
+        <span class="n">outputs</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">input_ids</span><span class="p">,</span> <span class="n">attention_mask</span><span class="o">=</span><span class="n">attention_mask</span><span class="p">)</span>
         <span class="n">next_token_logits</span> <span class="o">=</span> <span class="n">outputs</span><span class="p">[</span><span class="mi">0</span><span class="p">][:,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="p">:]</span>
         <span class="n">next_token_logits</span> <span class="o">=</span> <span class="n">top_k_top_p_filtering</span><span class="p">(</span><span class="n">next_token_logits</span><span class="p">,</span> <span class="n">top_k</span><span class="o">=</span><span class="n">top_k</span><span class="p">,</span> <span class="n">top_p</span><span class="o">=</span><span class="n">top_p</span><span class="p">)</span>
         <span class="c1"># Sample</span>
@@ -508,7 +508,7 @@ description: "A GPT2 model with a value head built on the `transformer` library 
 
 
 <div class="output_markdown rendered_html output_subarea ">
-<h4 id="respond_to_batch" class="doc_header"><code>respond_to_batch</code><a href="https://github.com/lvwerra/trl/tree/master/trl/gpt2.py#L113" class="source_link" style="float:right">[source]</a></h4><blockquote><p><code>respond_to_batch</code>(<strong><code>model</code></strong>, <strong><code>queries</code></strong>, <strong><code>txt_len</code></strong>=<em><code>20</code></em>, <strong><code>top_k</code></strong>=<em><code>0</code></em>, <strong><code>top_p</code></strong>=<em><code>1.0</code></em>)</p>
+<h4 id="respond_to_batch" class="doc_header"><code>respond_to_batch</code><a href="https://github.com/lvwerra/trl/tree/master/trl/gpt2.py#L113" class="source_link" style="float:right">[source]</a></h4><blockquote><p><code>respond_to_batch</code>(<strong><code>model</code></strong>, <strong><code>queries</code></strong>, <strong><code>attention_mask</code></strong>=<em><code>None</code></em>, <strong><code>txt_len</code></strong>=<em><code>20</code></em>, <strong><code>top_k</code></strong>=<em><code>0</code></em>, <strong><code>top_p</code></strong>=<em><code>1.0</code></em>)</p>
 </blockquote>
 <p>Sample text from language model.</p>
 
