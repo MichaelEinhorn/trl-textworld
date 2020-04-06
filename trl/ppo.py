@@ -107,7 +107,7 @@ class PPOTrainer:
                                            self.ppo_params['horizon'])
 
 
-    def step(self, query, response, scores):
+    def step(self, query, response, scores, query_mask=None):
         """
         Run a PPO optimisation step.
 
@@ -119,6 +119,7 @@ class PPOTrainer:
         returns:
             train_stats (dict): a summary of the training statistics
         """
+        # TODO: implement response masking
 
         bs = self.ppo_params['batch_size']
         timing = dict()
@@ -126,9 +127,13 @@ class PPOTrainer:
 
         gen_len = response.shape[1]
         model_input = torch.cat((query, response), axis=1)
+        if query_mask is None:
+            model_mask = None
+        else:
+            model_mask = torch.cat((query_mask, torch.ones(response.shape)), axis=1)
 
         t = time.time()
-        logprobs, ref_logprobs, values = self.batched_forward_pass(model_input, gen_len)
+        logprobs, ref_logprobs, values = self.batched_forward_pass(model_input, gen_len, model_mask=model_mask)
         timing['time/ppo/forward_pass'] = time.time()-t
 
         t = time.time()
@@ -142,9 +147,15 @@ class PPOTrainer:
             random.shuffle(idxs)
             for i in range(bs):
                 idx = idxs[i]
+                if model_mask is not None:
+                    m_mask = model_mask[idx:idx+1]
+                else:
+                    m_mask = None
+                # TODO: implement minibatch size other than 1
                 train_stats = self.train_minibatch(logprobs[idx:idx+1], values[idx:idx+1],
                                                    rewards[idx:idx+1], query[idx:idx+1],
-                                                   response[idx:idx+1], model_input[idx:idx+1])
+                                                   response[idx:idx+1], model_input[idx:idx+1],
+                                                   model_mask=m_mask)
                 all_stats.append(train_stats)
         timing['time/ppo/optimize_step'] = time.time()-t
 
@@ -167,7 +178,7 @@ class PPOTrainer:
         stats.update(timing)
         return stats
 
-    def batched_forward_pass(self, model_input, gen_len):
+    def batched_forward_pass(self, model_input, gen_len, model_mask=None):
         """Calculate model outputs in multiple batches."""
         bs = self.ppo_params['batch_size']
         fbs = self.ppo_params['forward_batch_size']
@@ -177,8 +188,13 @@ class PPOTrainer:
 
         for i in range(int(self.ppo_params['batch_size']/fbs)):
             m_input = model_input[i*fbs:(i+1)*fbs]
-            logits, _, v = self.model(m_input)
-            ref_logits, _, _ = self.ref_model(m_input)
+            if model_mask is None:
+                m_mask = None
+            else:
+                m_mask = model_mask[i*fbs:(i+1)*fbs]
+
+            logits, _, v = self.model(m_input, attention_mask=m_mask)
+            ref_logits, _, _ = self.ref_model(m_input, attention_mask=m_mask)
 
             values.append(v[:, -gen_len-1:-1].detach())
             logprobs.append(logprobs_from_logits(logits[:,:-1,:], m_input[:,1:])[:, -gen_len:].detach())
@@ -186,9 +202,10 @@ class PPOTrainer:
 
         return torch.cat(logprobs), torch.cat(ref_logprobs), torch.cat(values)
 
-    def train_minibatch(self, logprobs, values, rewards, query, response, model_input):
+    def train_minibatch(self, logprobs, values, rewards, query, response, model_input, model_mask=None):
         """Train one PPO minibatch"""
-        loss_p, loss_v, train_stats  = self.loss(logprobs, values, rewards, query, response, model_input)
+        loss_p, loss_v, train_stats  = self.loss(logprobs, values, rewards, query, response, model_input,
+                                                 model_mask=model_mask)
         loss = loss_p + loss_v
         self.optimizer.zero_grad()
         loss.backward()
@@ -203,7 +220,7 @@ class PPOTrainer:
         rewards[:, -1] += scores
         return rewards, non_score_reward, self.kl_ctl.value
 
-    def loss(self, old_logprobs, values, rewards, query, response, model_input):
+    def loss(self, old_logprobs, values, rewards, query, response, model_input, model_mask=None):
         """Calculate policy and value losses."""
         lastgaelam = 0
         advantages_reversed = []
@@ -220,7 +237,7 @@ class PPOTrainer:
         advantages = whiten(advantages)
         advantages = advantages.detach()
 
-        logits, _, vpred = self.model(model_input)
+        logits, _, vpred = self.model(model_input, attention_mask=model_mask)
         logprob = logprobs_from_logits(logits[:,:-1,:], model_input[:, 1:])
 
         #only the generation part of the values/logprobs is needed

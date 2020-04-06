@@ -110,12 +110,12 @@ class GPT2HeadWithValueModel(GPT2PreTrainedModel):
 
 # Cell
 
-def respond_to_batch(model, queries, txt_len=20, top_k=0, top_p=1.0):
+def respond_to_batch(model, queries, attention_mask=None, txt_len=20, top_k=0, top_p=1.0):
     """Sample text from language model."""
     input_ids = queries
     for i in range(txt_len):
         # Get Logits
-        outputs = model(input_ids)
+        outputs = model(input_ids, attention_mask=attention_mask)
         next_token_logits = outputs[0][:, -1, :]
         next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=top_k, top_p=top_p)
         # Sample

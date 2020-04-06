@@ -5,7 +5,7 @@ __all__ = ["index", "modules", "custom_doc_links", "git_url"]
 index = {"flatten_dict": "00-core.ipynb",
          "stack_dicts": "00-core.ipynb",
          "add_suffix": "00-core.ipynb",
-         "pad_to_size": "00-core.ipynb",
+         "pad_to_size_left": "00-core.ipynb",
          "logprobs_from_logits": "00-core.ipynb",
          "whiten": "00-core.ipynb",
          "clip_by_value": "00-core.ipynb",
