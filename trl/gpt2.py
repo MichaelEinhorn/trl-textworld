@@ -115,7 +115,7 @@ def respond_to_batch(model, queries, attention_mask=None, txt_len=20, top_k=0, t
     input_ids = queries
     if attention_mask is not None:
         ones = torch.ones((attention_mask.shape[0], 1),
-                          dtype=torch.long,
+                          dtype=attention_mask.dtype,
                           device=attention_mask.device)
 
     for i in range(txt_len):
