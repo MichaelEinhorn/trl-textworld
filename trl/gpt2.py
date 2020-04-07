@@ -113,6 +113,11 @@ class GPT2HeadWithValueModel(GPT2PreTrainedModel):
 def respond_to_batch(model, queries, attention_mask=None, txt_len=20, top_k=0, top_p=1.0):
     """Sample text from language model."""
     input_ids = queries
+    if attention_mask is not None:
+        ones = torch.ones((attention_mask.shape[0], 1),
+                          dtype=torch.long,
+                          device=attention_mask.device)
+
     for i in range(txt_len):
         # Get Logits
         outputs = model(input_ids, attention_mask=attention_mask)
@@ -122,4 +127,6 @@ def respond_to_batch(model, queries, attention_mask=None, txt_len=20, top_k=0, t
         probs = F.softmax(next_token_logits, dim=-1)
         next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
         input_ids = torch.cat([input_ids, next_token.unsqueeze(-1)], dim=-1)
+        if attention_mask is not None:
+            attention_mask = torch.cat([attention_mask, ones], dim=-1)
     return input_ids[:, -txt_len:]
