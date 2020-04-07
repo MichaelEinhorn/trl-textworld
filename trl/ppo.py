@@ -130,7 +130,10 @@ class PPOTrainer:
         if query_mask is None:
             model_mask = None
         else:
-            model_mask = torch.cat((query_mask, torch.ones(response.shape)), axis=1)
+            ones = torch.ones(response.shape,
+                              dtype=query_mask.dtype,
+                              device=query_mask.device)
+            model_mask = torch.cat((query_mask, ones), axis=1)
 
         t = time.time()
         logprobs, ref_logprobs, values = self.batched_forward_pass(model_input, gen_len, model_mask=model_mask)
