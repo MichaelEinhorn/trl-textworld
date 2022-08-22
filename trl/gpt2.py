@@ -77,14 +77,17 @@ class GPT2HeadWithValueModel(GPT2PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         config.num_labels = 1
-        self.transformer = GPT2Model(config)
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        print(config)
+        # self.transformer = GPT2Model(config)
+        self.transformer = GPT2LMHeadModel.from_pretrained('gpt2')
+        # self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.v_head = ValueHead(config)
 
         self.init_weights()
 
     def get_output_embeddings(self):
-        return self.lm_head
+        # return self.lm_head
+        return self.transformer.get_output_embeddings()
 
     def detach_value_head(self):
         self.v_head.detach_head = True
@@ -114,16 +117,22 @@ class GPT2HeadWithValueModel(GPT2PreTrainedModel):
             position_ids=position_ids,
             head_mask=head_mask,
             inputs_embeds=inputs_embeds,
+            # for LMHeadModel
+            output_hidden_states=True
         )
 
-        hidden_states = transformer_outputs[0]
+        # hidden_states = transformer_outputs[0]
+        hidden_states = transformer_outputs[1][-1]
 
-        lm_logits = self.lm_head(hidden_states)
+        # lm_logits = self.lm_head(hidden_states)
+        lm_logits = transformer_outputs[0]
+        
         value = self.v_head(hidden_states).squeeze(-1)
 
 
         if not return_dict:
-            outputs = (lm_logits,) + transformer_outputs[1:] + (value,)
+            # outputs = (lm_logits,) + transformer_outputs[1:] + (value,)
+            outputs = (lm_logits,) + transformer_outputs[2:] + (value,)
             return outputs
 
         return CausalLMOutputWithCrossAttentions(
