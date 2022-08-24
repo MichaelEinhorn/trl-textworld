@@ -203,11 +203,12 @@ class PPOTrainer:
             input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])["input_ids"]
             with torch.no_grad():
                 # logits, _, v = self.model(input_ids)
-                logits, hidden_state = self.model(model_input, output_hidden_states=True)
-                hidden_state = hidden_state[-1]
+                lmOut = self.model(input_ids, output_hidden_states=True)
+                # print(dir(lmOut))
+                logits, hidden_state = lmOut.logits, lmOut.hidden_states[-1]
                 v = self.valueHead(hidden_state)
                 # ref_logits, _, _ = self.ref_model(input_ids)
-                ref_logits = self.ref_model(input_ids)
+                ref_logits = self.ref_model(input_ids).logits
             logprobs = logprobs_from_logits(logits[:,:-1,:], input_ids[:,1:])
             ref_logprobs = logprobs_from_logits(ref_logits[:,:-1,:], input_ids[:,1:])
             for j in range(fbs):
@@ -257,8 +258,10 @@ class PPOTrainer:
         advantages = advantages.detach()
 
         # logits, _, vpred = self.model(model_input)
-        logits, hidden_state = self.model(model_input, output_hidden_states=True)
-        hidden_state = hidden_state[-1]
+        lmOut = self.model(model_input, output_hidden_states=True)
+        # print(dir(lmOut))
+        logits, hidden_state = lmOut.logits, lmOut.hidden_states[-1]
+        
         vpred = self.valueHead(hidden_state)
         logprob = logprobs_from_logits(logits[:,:-1,:], model_input[:, 1:])
 

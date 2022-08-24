@@ -1,3 +1,8 @@
+games/
+testing_games/
+training_games/
+*.pt
+
 *.bak
 .gitattributes
 .last_checked
