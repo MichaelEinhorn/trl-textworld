@@ -1,8 +1,5 @@
 # sepparates value head from the model so that it can be a drop in transformer where output_hidden_states is an option
 
-__all__ = ['AdaptiveKLController', 'FixedKLController', 'PPOTrainer']
-
-# Cell
 import numpy as np
 import torch.nn.functional as F
 from torch.optim import Adam
@@ -11,11 +8,11 @@ import collections
 import time
 import random
 
-from .valueHead import ValueHead
+from valueHead import ValueHead
 
 from transformers import DataCollatorForLanguageModeling
 
-from .core import (logprobs_from_logits,
+from core import (logprobs_from_logits,
                       whiten,
                       clip_by_value,
                       entropy_from_logits,
@@ -25,8 +22,6 @@ from .core import (logprobs_from_logits,
                       stack_dicts,
                       add_suffix,
                       WANDB_PADDING)
-
-# Cell
 
 class AdaptiveKLController:
     """
@@ -44,8 +39,6 @@ class AdaptiveKLController:
         mult = 1 + proportional_error * n_steps / self.horizon
         self.value *= mult
 
-# Cell
-
 class FixedKLController:
     """Fixed KL controller."""
     def __init__(self, kl_coef):
@@ -53,8 +46,6 @@ class FixedKLController:
 
     def update(self, current, n_steps):
         pass
-
-# Cell
 
 class PPOTrainer:
     """
@@ -219,8 +210,16 @@ class PPOTrainer:
                 v = self.valueHead(hidden_state)
                 # ref_logits, _, _ = self.ref_model(input_ids)
                 ref_logits = self.ref_model(input_ids).logits
-            logprobs = logprobs_from_logits(logits[:,:-1,:], input_ids[:,1:])
-            ref_logprobs = logprobs_from_logits(ref_logits[:,:-1,:], input_ids[:,1:])
+                
+                logprobs = logprobs_from_logits(logits[:,:-1,:], input_ids[:,1:])
+                ref_logprobs = logprobs_from_logits(ref_logits[:,:-1,:], input_ids[:,1:])
+                
+                # clean ram
+                del logits
+                del hidden_state
+                del ref_logits
+                del lmOut
+                
             for j in range(fbs):
                 start = len(query_batch[j])-1
                 end = len(query_batch[j]) + len(response_batch[j])-1
