@@ -101,15 +101,24 @@ class PPOTrainer:
                 'horizon' (float): Horizon for adaptive KL control, default: 10000
 
         """
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
         self.ppo_params = self.default_params
         self.ppo_params.update(ppo_params)
 
         self.ref_model = ref_model
         self.model = model
-        config = self.model.config
+        self.config = self.model.config
         # copied from gpt2.py, not sure what this does
-        config.num_labels = 1
-        self.valueHead = ValueHead(config)
+        self.config.num_labels = 1
+        self.valueHead = ValueHead(self.config)
+        
+        self.valueHead = self.valueHead.to(self.device)
+        
+        # make value head same precision as model
+        if self.config.torch_dtype == torch.float16:
+            self.valueHead = self.valueHead.half()
+            
         # print(self.valueHead)
         
         self.tokenizer = tokenizer
@@ -201,6 +210,7 @@ class PPOTrainer:
             query_batch = queries[i*fbs:(i+1)*fbs]
             response_batch = responses[i*fbs:(i+1)*fbs]
             input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])["input_ids"]
+            input_ids = input_ids.to(self.device)
             with torch.no_grad():
                 # logits, _, v = self.model(input_ids)
                 lmOut = self.model(input_ids, output_hidden_states=True)
@@ -256,6 +266,8 @@ class PPOTrainer:
         returns = advantages + values
         advantages = whiten(advantages)
         advantages = advantages.detach()
+        
+        model_input = model_input.to(self.device)
 
         # logits, _, vpred = self.model(model_input)
         lmOut = self.model(model_input, output_hidden_states=True)
