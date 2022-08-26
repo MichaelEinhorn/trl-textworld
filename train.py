@@ -7,10 +7,12 @@ import textworld.gym
 from ppoValHead import PPOTrainer
 from torchinfo import summary
 
+import deepspeed
+
 def getEnvs(download=True):
     if download:
-        os.system(wget https://aka.ms/textworld/notebooks/data.zip)
-        os.system(unzip -nq data.zip && rm -f data.zip)
+        os.system("wget https://aka.ms/textworld/notebooks/data.zip")
+        os.system("unzip -nq data.zip && rm -f data.zip")
     else:
         # Same as !make_games.sh
         os.system("tw-make tw-simple --rewards dense    --goal detailed --seed 18 --test --silent -f --output games/tw-rewardsDense_goalDetailed.z8")
@@ -127,19 +129,18 @@ def train(model_name, low_ram=True, single_game=True):
         
         os.makedirs('checkpoints', exist_ok=True)
         torch.save(agent, 'checkpoints/agent_trained_on_multiple_games.pt')
-
-# Save the trained agent.
-import os
-os.makedirs('checkpoints', exist_ok=True)
-torch.save(agent, 'checkpoints/agent_trained_on_multiple_games.pt')
     
     
-if __name__ == "main":
+if __name__ == "__main__":
     import argparse
+    
+    getEnvs()
+    print("generated envs")
     
     model_name = 'gpt2-xl'
     # model_name = 'gptj'
     low_ram = True
+    single_game = True
 
     train(model_name, low_ram, single_game)
     
