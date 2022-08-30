@@ -209,7 +209,7 @@ class PPOTrainer(pl.LightningModule):
 
         t = time.time()
         all_stats = []
-        total_loss = 0
+        total_loss = None
         idxs = list(range(bs))
         for _ in range(self.ppo_params['ppo_epochs']):
             random.shuffle(idxs)
@@ -220,7 +220,10 @@ class PPOTrainer(pl.LightningModule):
                                                    responses[idx].unsqueeze(0),
                                                    torch.cat([queries[idx], responses[idx]]).unsqueeze(0))
                 all_stats.append(train_stats)
-                total_loss += loss
+                if total_loss is None:
+                    total_loss = loss
+                else:
+                    total_loss += loss
         timing['time/ppo/optimize_step'] = time.time() - t
 
         t = time.time()
