@@ -87,6 +87,7 @@ class Player:
         for i in range(steps):
             if self.done:
                 self.resetEnv()
+                print("reset env")
 
             command = self.agent.act(self.obs, self.score, self.done, self.infos)
             self.obs, self.score, self.done, self.infos = self.env.step(command)
