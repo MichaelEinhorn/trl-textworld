@@ -19,9 +19,6 @@ from torch.nn import Identity
 
 from ppoValHead import PPOTrainer
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
 class RandomAgent(textworld.gym.Agent):
     """ Agent that randomly selects a command from the admissible ones. """
 
@@ -59,22 +56,16 @@ class NLPAgent:
     GAMMA = 0.9
     MEMORY_LEN = 3
 
-    def __init__(self, model, tokenizer, buffer, humanTurns=0) -> None:
+    def __init__(self, tokenizer, buffer, humanTurns=0) -> None:
         self._initialized = False
         self._epsiode_has_started = False
 
         self.memory = RollingBuffer(self.MEMORY_LEN)
 
-        self.model = model
-        self.valueHead = None  # added later
         self.tokenizer = tokenizer
 
         self.humanTurns = humanTurns
         self.humanTurnsRem = self.humanTurns
-
-        if device == "cuda":
-            self.model.cuda()
-            self.tokenizer.cuda()
 
         self.mode = "test"
         self.transitions = []
@@ -148,30 +139,7 @@ class NLPAgent:
 
             self.stats["max"]["score"].append(score)
 
-            # self.stats["max"]["score"].append(score)
-            # if self.no_train_step % self.UPDATE_FREQUENCY == 0:
-            #     # get discounted returns and advantages across multiple actions. Currently not used
-            #     returns, advantages = self._discount_rewards()
-            #
-            #     query = []
-            #     response = []
-            #     rewardList = []
-            #
-            #     for t in reversed(range(len(self.transitions))):
-            #       rew, prompt, action, values = self.transitions[t]
-            #
-            #       query.append(prompt[0])
-            #       response.append(action[0])
-            #       rewardList.append(rew)
-            #
-            #     train_stats = self.ppo_trainer.step(query, response, rewardList)
-            #
-            #     if self.no_train_step % self.LOG_FREQUENCY == 0:
-            #       print(train_stats)
-            #
-            #     self.transitions = []
-
-    def act(self, obs: str, score: int, done: bool, infos: Mapping[str, Any]) -> Optional[str]:
+    def act(self, obs: str, score: int, done: bool, infos: Mapping[str, Any], lightmodel) -> Optional[str]:
         if self.clearTextWorldArt:
             self.clearTextWorldArt = False
             if "Welcome to TextWorld!" in obs:
@@ -192,7 +160,7 @@ class NLPAgent:
         # grabs value of last token in action
         values = 0
         # convert text to tensor
-        input_ids = self.tokenizer.encode(prompt, add_special_tokens=True, return_tensors="pt").to(device)
+        input_ids = self.tokenizer.encode(prompt, add_special_tokens=True, return_tensors="pt")
         print("prompt tokens: ", input_ids.shape)
         print(input_)
 
@@ -213,16 +181,10 @@ class NLPAgent:
             with torch.no_grad():
                 # get logits, only get last value
                 if cache is None:
-                    lmOut = self.model(input_ids, output_hidden_states=True, use_cache=True)
+                    logits, cache, values = lightmodel(input_ids, use_cache=True, outputVals=True)
                 else:
-                    lmOut = self.model(input_ids[:, -1:], output_hidden_states=True, use_cache=True,
-                                       past_key_values=cache)
-                # print(dir(lmOut))
-                logits, hidden_state, cache = lmOut.logits, lmOut.hidden_states[-1], lmOut.past_key_values
-
-                # hidden_state = hidden_state[-1]
-                values = self.valueHead(hidden_state)
-
+                    logits, cache, values = lightmodel(input_ids[:, -1:], outputVals=True, use_cache=True, past_key_values=cache)
+                
                 next_token_logits = logits[:, -1, :]
                 next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=0, top_p=1)
                 probs = F.softmax(next_token_logits, dim=-1)
@@ -231,13 +193,8 @@ class NLPAgent:
 
                 new_tokens += 1
 
-        del cache
-        del hidden_state
-
-        action_tens = input_ids[:, -new_tokens:].to("cpu")
-        prompt_tens = input_ids[:, :-new_tokens].to("cpu")
-
-        del input_ids
+        action_tens = input_ids[:, -new_tokens:]
+        prompt_tens = input_ids[:, :-new_tokens]
 
         action = self.tokenizer.decode(action_tens[0, :])
 

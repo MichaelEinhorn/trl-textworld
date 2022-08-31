@@ -47,6 +47,7 @@ class Player:
     def __init__(self, agent, path, max_step=100, verbose=True):
         torch.manual_seed(20211021)  # For reproducibility when using action sampling.
 
+        self.agent = agent
         self.infos_to_request = agent.infos_to_request
         self.infos_to_request.max_score = True  # Needed to normalize the scores.
 
@@ -82,14 +83,14 @@ class Player:
         self.done = False
         self.nb_moves = 0
 
-    def runGame(self, steps=10):
+    def runGame(self, lightmodel, steps=10):
         print("running game for " + str(steps))
         for i in range(steps):
             if self.done:
                 self.resetEnv()
                 print("reset env")
 
-            command = self.agent.act(self.obs, self.score, self.done, self.infos)
+            command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel)
             self.obs, self.score, self.done, self.infos = self.env.step(command)
             if hasattr(self.agent, 'reportScore'):
                 self.agent.reportScore(self.score, self.done, self.infos)
@@ -97,7 +98,7 @@ class Player:
 
             if self.done:
                 self.no_episode += 1
-                self.agent.act(self.obs, self.score, self.done, self.infos)  # Let the agent know the game is done.
+                self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel)  # Let the agent know the game is done.
 
                 if self.verbose:
                     print(".", end="")
@@ -119,9 +120,6 @@ class Player:
 def train(model_name, low_ram=True, single_game=True):
     from agents import NLPAgent
     from time import time
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
 
     # gpt2 and gpt2-xl
     if 'gpt2' in model_name:
@@ -147,11 +145,8 @@ def train(model_name, low_ram=True, single_game=True):
     LOG_FREQUENCY = 10
 
     buffer = ReplayBuffer(UPDATE_FREQUENCY)
-    agent = NLPAgent(model, tokenizer, buffer, humanTurns=0)
+    agent = NLPAgent(tokenizer, buffer, humanTurns=0)
     summary(model_ref)
-
-    model = model.to(device)
-    model_ref = model_ref.to(device)
 
     if single_game:
         print("Training")
@@ -166,9 +161,7 @@ def train(model_name, low_ram=True, single_game=True):
     if model_ref is not None:
         # initialize trainer
         ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': 1}
-        ppo_trainer = PPOTrainer(model, model_ref, tokenizer, player, buffer, **ppo_config)
-        valueHead = ppo_trainer.valueHead
-        agent.valueHead = valueHead
+        ppo_trainer = PPOTrainer(model, model_ref, tokenizer, player, buffer, agent, **ppo_config)
 
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
     trainer = pl.Trainer(

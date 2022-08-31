@@ -84,7 +84,7 @@ class PPOTrainer(pl.LightningModule):
         "ppo_epochs": 4,
     }
 
-    def __init__(self, model, ref_model, tokenizer, player, buffer, **ppo_params):
+    def __init__(self, model, ref_model, tokenizer, player, buffer, agent, **ppo_params):
         super().__init__()
         """
         Initialize PPOTrainer.
@@ -109,8 +109,6 @@ class PPOTrainer(pl.LightningModule):
                 'horizon' (float): Horizon for adaptive KL control, default: 10000
 
         """
-        # crashes to set device
-        # self.device_= torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.buffer = buffer
         self.player = player
@@ -125,12 +123,12 @@ class PPOTrainer(pl.LightningModule):
         # copied from gpt2.py, not sure what this does
         self.config.num_labels = 1
         self.valueHead = ValueHead(self.config)
-
-        self.valueHead = self.valueHead.to(self.device)
-
+        
         # make value head same precision as model
-        if self.config.torch_dtype == torch.float16:
-            self.valueHead = self.valueHead.half()
+        # if self.config.torch_dtype == torch.float16:
+        #     self.valueHead = self.valueHead.half()
+        
+        self.agent = agent
 
         # print(self.valueHead)
 
@@ -145,7 +143,15 @@ class PPOTrainer(pl.LightningModule):
             self.kl_ctl = FixedKLController(self.ppo_params['init_kl_coef'])
             
         # fill Replay Buffer before first step
-        self.player.runGame(self.ppo_params['batch_size'])
+        
+    def on_train_start(self):
+        self.runGame()
+    def on_batch_end(self):
+        self.runGame()
+    
+        
+    def runGame(self):
+        self.player.runGame(self, self.ppo_params['batch_size'])
 
     def configure_optimizers(self) -> List[Optimizer]:
         """ Initialize Adam optimizer"""
@@ -165,18 +171,34 @@ class PPOTrainer(pl.LightningModule):
         """Get train loader"""
         return self.__dataloader()
 
-    def forward(self, input_ids):
-        lmOut = self.model(input_ids, output_hidden_states=True)
+    def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False):
+        if past_key_values is None:
+            lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache)
+        else:
+            lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache, past_key_values=past_key_values)
         # print(dir(lmOut))
-        logits, hidden_state = lmOut.logits, lmOut.hidden_states[-1]
-        v = self.valueHead(hidden_state)
+        logits = lmOut.logits
+        
+        output = [logits]
+        
+        if use_cache:
+            cache = lmOut.past_key_values
+            output.append(cache)
+        
+        if outputRef:
+            with torch.no_grad():
+                ref_logits = self.ref_model(input_ids).logits
+                output.append(ref_logits)
+                
+        if outputVals:
+            hidden_state = lmOut.hidden_states[-1]
+            v = self.valueHead(hidden_state)
+            output.append(v)
         # ref_logits, _, _ = self.ref_model(input_ids)
-        with torch.no_grad():
-            ref_logits = self.ref_model(input_ids).logits
-        return logits, ref_logits, v
+        
+        return tuple(output)
 
     def training_step(self, batch, nb_batch):
-        self.player.runGame(self.ppo_params['batch_size'])
         # rew, prompt[0], action[0], values, ret_cross, adv_cross
         scores, queries, responses, values, ret_cross, adv_cross = batch
 
@@ -265,24 +287,20 @@ class PPOTrainer(pl.LightningModule):
             response_batch = responses[i * fbs:(i + 1) * fbs]
             input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])[
                 "input_ids"]
-            input_ids = input_ids.to(self.device)
             with torch.no_grad():
-                # logits, _, v = self.model(input_ids)
-                lmOut = self.model(input_ids, output_hidden_states=True)
-                # print(dir(lmOut))
-                logits, hidden_state = lmOut.logits, lmOut.hidden_states[-1]
-                v = self.valueHead(hidden_state)
-                # ref_logits, _, _ = self.ref_model(input_ids)
-                ref_logits = self.ref_model(input_ids).logits
+                # # logits, _, v = self.model(input_ids)
+                # lmOut = self.model(input_ids, output_hidden_states=True)
+                # # print(dir(lmOut))
+                # logits, hidden_state = lmOut.logits, lmOut.hidden_states[-1]
+                # v = self.valueHead(hidden_state)
+                # # ref_logits, _, _ = self.ref_model(input_ids)
+                # ref_logits = self.ref_model(input_ids).logits
+                
+                logits, ref_logits, v = self.forward(input_ids, outputVals=True, outputRef=True)
 
                 logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
                 ref_logprobs = logprobs_from_logits(ref_logits[:, :-1, :], input_ids[:, 1:])
 
-                # clean ram
-                del logits
-                del hidden_state
-                del ref_logits
-                del lmOut
 
             for j in range(fbs):
                 start = len(query_batch[j]) - 1
@@ -329,15 +347,9 @@ class PPOTrainer(pl.LightningModule):
         returns = advantages + values
         advantages = whiten(advantages)
         advantages = advantages.detach()
-
-        model_input = model_input.to(self.device)
-
-        # logits, _, vpred = self.model(model_input)
-        lmOut = self.model(model_input, output_hidden_states=True)
-        # print(dir(lmOut))
-        logits, hidden_state = lmOut.logits, lmOut.hidden_states[-1]
-
-        vpred = self.valueHead(hidden_state)
+        
+        logits, vpred = self.forward(model_input, outputVals=True)
+        
         logprob = logprobs_from_logits(logits[:, :-1, :], model_input[:, 1:])
 
         # only the generation part of the values/logprobs is needed
