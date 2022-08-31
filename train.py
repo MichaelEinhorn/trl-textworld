@@ -83,6 +83,7 @@ class Player:
         self.nb_moves = 0
 
     def runGame(self, steps=10):
+        print("running game for " + str(steps))
         for i in range(steps):
             if self.done:
                 self.resetEnv()
