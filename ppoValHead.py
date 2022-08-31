@@ -85,6 +85,7 @@ class PPOTrainer(pl.LightningModule):
     }
 
     def __init__(self, model, ref_model, tokenizer, player, buffer, **ppo_params):
+        super().__init__()
         """
         Initialize PPOTrainer.
 
@@ -108,7 +109,8 @@ class PPOTrainer(pl.LightningModule):
                 'horizon' (float): Horizon for adaptive KL control, default: 10000
 
         """
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # crashes to set device
+        # self.device_= torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.buffer = buffer
         self.player = player
@@ -116,8 +118,9 @@ class PPOTrainer(pl.LightningModule):
         self.ppo_params = self.default_params
         self.ppo_params.update(ppo_params)
 
-        self.ref_model = ref_model
         self.model = model
+        self.ref_model = ref_model
+        
         self.config = self.model.config
         # copied from gpt2.py, not sure what this does
         self.config.num_labels = 1
@@ -140,6 +143,9 @@ class PPOTrainer(pl.LightningModule):
                                                self.ppo_params['horizon'])
         else:
             self.kl_ctl = FixedKLController(self.ppo_params['init_kl_coef'])
+            
+        # fill Replay Buffer before first step
+        self.player.runGame(self.ppo_params['batch_size'])
 
     def configure_optimizers(self) -> List[Optimizer]:
         """ Initialize Adam optimizer"""
@@ -169,7 +175,7 @@ class PPOTrainer(pl.LightningModule):
             ref_logits = self.ref_model(input_ids).logits
         return logits, ref_logits, v
 
-    def train_step(self, batch, nb_batch):
+    def training_step(self, batch, nb_batch):
         self.player.runGame(self.ppo_params['batch_size'])
         # rew, prompt[0], action[0], values, ret_cross, adv_cross
         scores, queries, responses, values, ret_cross, adv_cross = batch

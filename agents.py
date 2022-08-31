@@ -3,7 +3,7 @@ import numpy as np
 import re
 from typing import List, Mapping, Any, Optional
 from collections import defaultdict
-from datastructures import buffer
+from datastructures import RollingBuffer
 
 import textworld
 import textworld.gym
@@ -63,7 +63,7 @@ class NLPAgent:
         self._initialized = False
         self._epsiode_has_started = False
 
-        self.memory = buffer(self.MEMORY_LEN)
+        self.memory = RollingBuffer(self.MEMORY_LEN)
 
         self.model = model
         self.valueHead = None  # added later

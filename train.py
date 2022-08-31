@@ -145,8 +145,8 @@ def train(model_name, low_ram=True, single_game=True):
     LOG_FREQUENCY = 10
 
     buffer = ReplayBuffer(UPDATE_FREQUENCY)
-    agent = NLPAgent(model, model_ref, tokenizer, buffer, humanTurns=0)
-    summary(model)
+    agent = NLPAgent(model, tokenizer, buffer, humanTurns=0)
+    summary(model_ref)
 
     model = model.to(device)
     model_ref = model_ref.to(device)
@@ -168,14 +168,15 @@ def train(model_name, low_ram=True, single_game=True):
         valueHead = ppo_trainer.valueHead
         agent.valueHead = valueHead
 
-    from pytorch_lightning.plugins import DeepSpeedPlugin
+    from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
     trainer = pl.Trainer(
         logger=False,
-        gpus=1,
+        accelerator='gpu', devices=1,
         max_epochs=500,
-        plugins=DeepSpeedPlugin(
-            stage=3,
-            cpu_offload=True))
+        precision=16,
+        strategy=DeepSpeedStrategy(
+            zero_optimization=True,
+            stage=3))
 
     trainer.fit(ppo_trainer)
 

@@ -3,7 +3,7 @@ import numpy as np
 from torch.utils.data.dataset import IterableDataset
 
 
-class buffer:
+class RollingBuffer:
     def __init__(self, max_size):
         self.max_size = max_size
         self.queue = deque([])
@@ -32,7 +32,7 @@ class ReplayBuffer:
         capacity: size of the buffer
     """
 
-    def __init__(self, capacity: int):
+    def __init__(self, capacity):
         self.buffer = deque(maxlen=capacity)
 
     def __len__(self):
@@ -42,16 +42,17 @@ class ReplayBuffer:
         """
         Add experience to the buffer
         Args:
-            experience: tuple (state, action, reward, done, new_state)
+            experience: tuple (scores, queries, responses, values, ret_cross, adv_cross)
         """
         self.buffer.append(experience)
 
-    def sample(self, batch_size: int):
+    def sample(self, batch_size):
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
-        states, actions, rewards, dones, next_states = zip(*[self.buffer[idx] for idx in indices])
+        # original states, actions, rewards, dones, next_states
+        scores, queries, responses, values, ret_cross, adv_cross = zip(*[self.buffer[idx] for idx in indices])
 
-        return (np.array(states), np.array(actions), np.array(rewards, dtype=np.float32),
-                np.array(dones, dtype=np.bool), np.array(next_states))
+        return (np.array(scores, dtype=np.float32), np.array(queries), np.array(responses),
+                np.array(values, dtype=np.float32), np.array(ret_cross, dtype=np.float32), np.array(adv_cross, dtype=np.float32))
 
 
 class RLDataset(IterableDataset):
