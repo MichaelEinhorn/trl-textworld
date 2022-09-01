@@ -18,6 +18,7 @@ from typing import Tuple, List
 import torch.optim as optim
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
+from torchinfo import summary
 
 from valueHead import ValueHead
 
@@ -84,7 +85,7 @@ class PPOTrainer(pl.LightningModule):
         "ppo_epochs": 4,
     }
 
-    def __init__(self, model, ref_model, tokenizer, player, buffer, agent, **ppo_params):
+    def __init__(self, model_name, player, buffer, agent, **ppo_params):
         super().__init__()
         """
         Initialize PPOTrainer.
@@ -116,8 +117,26 @@ class PPOTrainer(pl.LightningModule):
         self.ppo_params = self.default_params
         self.ppo_params.update(ppo_params)
 
-        self.model = model
-        self.ref_model = ref_model
+        # gpt2 and gpt2-xl
+        if 'gpt2' in model_name:
+            from transformers import GPT2Tokenizer, GPT2Model, GPT2LMHeadModel
+            self.model = GPT2LMHeadModel.from_pretrained(model_name)
+            self.ref_model = GPT2LMHeadModel.from_pretrained(model_name)
+            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+        elif model_name == 'gptj':
+            from transformers import GPT2Tokenizer, GPTJForCausalLM
+            if False:
+                self.model = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B", revision="float16",
+                                                        torch_dtype=torch.float16, low_cpu_mem_usage=True)
+                self.ref_model = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B", revision="float16",
+                                                            torch_dtype=torch.float16, low_cpu_mem_usage=True)
+            else:
+                self.model = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B")
+                self.ref_model = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B")
+            self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+
+        print(self.model.config.torch_dtype)
+        summary(self.model)
         
         self.config = self.model.config
         # copied from gpt2.py, not sure what this does
@@ -132,8 +151,7 @@ class PPOTrainer(pl.LightningModule):
 
         # print(self.valueHead)
 
-        self.tokenizer = tokenizer
-        self.data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+        self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
 
         if self.ppo_params['adap_kl_ctrl']:
             self.kl_ctl = AdaptiveKLController(self.ppo_params['init_kl_coef'],
@@ -151,7 +169,9 @@ class PPOTrainer(pl.LightningModule):
     
         
     def runGame(self):
+        # self is passing the model to do forward passes with
         self.player.runGame(self, self.ppo_params['batch_size'])
+        self.agent.fillBuffer()
 
     def configure_optimizers(self) -> List[Optimizer]:
         """ Initialize Adam optimizer"""
@@ -161,9 +181,9 @@ class PPOTrainer(pl.LightningModule):
 
     def __dataloader(self) -> DataLoader:
         """Initialize the Replay Buffer dataset used for retrieving experiences"""
-        dataset = RLDataset(self.buffer, self.ppo_params['batch_size'])
+        dataset = RLDataset(self.buffer, self.data_collator, self.ppo_params['batch_size'])
         dataloader = DataLoader(dataset=dataset,
-                                batch_size=self.ppo_params['batch_size'],
+                                batch_size=1,
                                 )
         return dataloader
 

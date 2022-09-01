@@ -56,13 +56,12 @@ class NLPAgent:
     GAMMA = 0.9
     MEMORY_LEN = 3
 
-    def __init__(self, tokenizer, buffer, humanTurns=0) -> None:
+    def __init__(self, buffer, humanTurns=0) -> None:
         self._initialized = False
         self._epsiode_has_started = False
 
         self.memory = RollingBuffer(self.MEMORY_LEN)
-
-        self.tokenizer = tokenizer
+        self.transitionBuffer = buffer
 
         self.humanTurns = humanTurns
         self.humanTurnsRem = self.humanTurns
@@ -113,13 +112,14 @@ class NLPAgent:
         returns, advantages = self._discount_rewards()
 
         for t in reversed(range(len(self.transitions))):
-          rew, prompt, action, values = self.transitions[t]
-          ret_cross = returns[t]
-          adv_cross = advantages[t]
-          # returns and advantages across multiple actions
-          # ppo trainer computes returns and advantages across tokens within an action
-          # not sure if these are usefull
-          exper = (rew, prompt[0], action[0], values, ret_cross, adv_cross)
+            rew, prompt, action, values = self.transitions[t]
+            ret_cross = returns[t]
+            adv_cross = advantages[t]
+            # returns and advantages across multiple actions
+            # ppo trainer computes returns and advantages across tokens within an action
+            # not sure if these are usefull
+            exper = (rew, prompt[0], action[0], values, ret_cross, adv_cross)
+            self.transitionBuffer.append(exper)
 
         self.transitions = []
 
@@ -160,7 +160,7 @@ class NLPAgent:
         # grabs value of last token in action
         values = 0
         # convert text to tensor
-        input_ids = self.tokenizer.encode(prompt, add_special_tokens=True, return_tensors="pt")
+        input_ids = lightmodel.tokenizer.encode(prompt, add_special_tokens=True, return_tensors="pt")
         print("prompt tokens: ", input_ids.shape)
         print(input_)
 
@@ -175,11 +175,12 @@ class NLPAgent:
 
         cache = None
 
-        while new_tokens == 0 or (new_tokens < 20 and "\n" not in self.tokenizer.decode(next_token)
-                                  and next_token != self.tokenizer.eos_token):
+        while new_tokens == 0 or (new_tokens < 20 and "\n" not in lightmodel.tokenizer.decode(next_token)
+                                  and next_token != lightmodel.tokenizer.eos_token):
             # run model
             with torch.no_grad():
                 # get logits, only get last value
+                input_ids = input_ids.to(lightmodel.device)
                 if cache is None:
                     logits, cache, values = lightmodel(input_ids, use_cache=True, outputVals=True)
                 else:
@@ -196,7 +197,7 @@ class NLPAgent:
         action_tens = input_ids[:, -new_tokens:]
         prompt_tens = input_ids[:, :-new_tokens]
 
-        action = self.tokenizer.decode(action_tens[0, :])
+        action = lightmodel.tokenizer.decode(action_tens[0, :])
 
         print("action")
         print(action)
@@ -209,7 +210,7 @@ class NLPAgent:
         self.memory.append(input_ + action)
 
         if self.mode == "train" and not done:
-            self.transitions.append([None, prompt_tens, action_tens, values])  # Reward will be set on the next call
+            self.transitions.append([None, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), values.to(torch.device("cpu"))])  # Reward will be set on the next call
 
         if done:
             self.last_score = 0  # Will be starting a new episode. Reset the last score.

@@ -117,36 +117,15 @@ class Player:
                 print(msg.format(np.mean(self.avg_moves), np.mean(self.avg_scores), self.infos["max_score"]))
 
 
-def train(model_name, low_ram=True, single_game=True):
+def train(model_name, single_game=True):
     from agents import NLPAgent
     from time import time
-
-    # gpt2 and gpt2-xl
-    if 'gpt2' in model_name:
-        from transformers import GPT2Tokenizer, GPT2Model, GPT2LMHeadModel
-        model = GPT2LMHeadModel.from_pretrained(model_name)
-        model_ref = GPT2LMHeadModel.from_pretrained(model_name)
-        tokenizer = GPT2Tokenizer.from_pretrained(model_name)
-    elif model_name == 'gptj':
-        from transformers import GPT2Tokenizer, GPTJForCausalLM
-        if low_ram:
-            model = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B", revision="float16",
-                                                    torch_dtype=torch.float16, low_cpu_mem_usage=True)
-            model_ref = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B", revision="float16",
-                                                        torch_dtype=torch.float16, low_cpu_mem_usage=True)
-        else:
-            model = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B")
-            model_ref = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B")
-        tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-
-    print(model.config.torch_dtype)
 
     UPDATE_FREQUENCY = 10
     LOG_FREQUENCY = 10
 
     buffer = ReplayBuffer(UPDATE_FREQUENCY)
-    agent = NLPAgent(tokenizer, buffer, humanTurns=0)
-    summary(model_ref)
+    agent = NLPAgent(buffer, humanTurns=0)
 
     if single_game:
         print("Training")
@@ -158,10 +137,8 @@ def train(model_name, low_ram=True, single_game=True):
         agent.train()  # Tell the agent it should update its parameters.
         player = Player(agent, "./training_games/", verbose=False)  # Each game will be seen 5 times.
 
-    if model_ref is not None:
-        # initialize trainer
-        ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': 1}
-        ppo_trainer = PPOTrainer(model, model_ref, tokenizer, player, buffer, agent, **ppo_config)
+    ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': 1}
+    ppo_trainer = PPOTrainer(model_name, player, buffer, agent, **ppo_config)
 
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
     trainer = pl.Trainer(
@@ -187,4 +164,4 @@ if __name__ == "__main__":
     low_ram = True
     single_game = True
 
-    train(model_name, low_ram, single_game)
+    train(model_name, single_game)
