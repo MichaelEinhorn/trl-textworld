@@ -95,7 +95,8 @@ class NLPAgent:
         returns, advantages = [], []
         if last_values is None:
             # not sure if this makes sense for when there is no next state
-            _, _, _, R = self.transitions[-1]
+            # _, _, _, R = self.transitions[-1]
+            R = 0
         else:
             R = last_values.data
         for t in reversed(range(len(self.transitions))):
@@ -110,6 +111,8 @@ class NLPAgent:
     def fillBuffer(self):
         # get discounted returns and advantages across multiple actions. Currently not used
         returns, advantages = self._discount_rewards()
+        
+        output = []
 
         for t in reversed(range(len(self.transitions))):
             rew, prompt, action, values = self.transitions[t]

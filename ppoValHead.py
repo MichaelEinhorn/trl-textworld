@@ -10,6 +10,8 @@ import random
 
 from datastructures import RLDataset
 from datastructures import ReplayBuffer
+from datastructures import LineDataset
+from datastructures import LineBuffer
 
 import pytorch_lightning as pl
 import argparse
@@ -111,11 +113,12 @@ class PPOTrainer(pl.LightningModule):
 
         """
 
-        self.buffer = buffer
-        self.player = player
-
         self.ppo_params = self.default_params
         self.ppo_params.update(ppo_params)
+        
+        self.agent_buffer = buffer
+        self.ppo_buffer = LineBuffer(self.ppo_params['batch_size'])
+        self.player = player
 
         # gpt2 and gpt2-xl
         if 'gpt2' in model_name:
@@ -172,16 +175,35 @@ class PPOTrainer(pl.LightningModule):
         # self is passing the model to do forward passes with
         self.player.runGame(self, self.ppo_params['batch_size'])
         self.agent.fillBuffer()
+        scores, queries, responses, values_old, ret_cross, adv_cross = self.agent_buffer.sample(self.ppo_params['batch_size'])
+        
+        # first part of original step, gets old logprobs and ref logprobs
+        bs = self.ppo_params['batch_size']
+        assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"
+
+        timing = dict()
+        t0 = time.time()
+
+        response_lengths = [len(r) for r in responses]
+
+        t = time.time()
+        logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
+        timing['time/ppo/forward_pass'] = time.time() - t
+
+        t = time.time()
+        rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
+        timing['time/ppo/compute_rewards'] = time.time() - t
+        
+        self.ppo_buffer.append((scores, queries, responses, values_old, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward))
 
     def configure_optimizers(self) -> List[Optimizer]:
         """ Initialize Adam optimizer"""
         # self.optimizer = Adam(model.parameters(), lr=self.ppo_params['lr'])
         optimizer = Adam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.ppo_params['lr'])
         return [optimizer]
-
+    
     def __dataloader(self) -> DataLoader:
-        """Initialize the Replay Buffer dataset used for retrieving experiences"""
-        dataset = RLDataset(self.buffer, self.data_collator, self.ppo_params['batch_size'])
+        dataset = LineDataset(self.ppo_buffer, self.ppo_params['batch_size'])
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=1,
                                 )
@@ -220,13 +242,7 @@ class PPOTrainer(pl.LightningModule):
 
     def training_step(self, batch, nb_batch):
         # rew, prompt[0], action[0], values, ret_cross, adv_cross
-        scores, queries, responses, values, ret_cross, adv_cross = batch
-
-        total_loss, stats = self.step(queries, responses, scores)
-        print(stats)
-        return total_loss
-
-    def step(self, queries, responses, scores):
+        scores, queries, responses, values_old, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
         """
         Run a PPO optimisation step.
 
@@ -239,39 +255,19 @@ class PPOTrainer(pl.LightningModule):
             train_stats (dict): a summary of the training statistics
         """
 
-        bs = self.ppo_params['batch_size']
-        assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"
+        # print(queries[0].shape)
+        
 
+        t = time.time()
         timing = dict()
-        t0 = time.time()
-
-        response_lengths = [len(r) for r in responses]
-
-        t = time.time()
-        logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
-        timing['time/ppo/forward_pass'] = time.time() - t
-
-        t = time.time()
-        rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
-        timing['time/ppo/compute_rewards'] = time.time() - t
-
-        t = time.time()
         all_stats = []
-        total_loss = None
-        idxs = list(range(bs))
         for _ in range(self.ppo_params['ppo_epochs']):
-            random.shuffle(idxs)
-            for i in range(bs):
-                idx = idxs[i]
-                train_stats, loss = self.train_minibatch(logprobs[idx].unsqueeze(0), values[idx].unsqueeze(0),
+            idx = 0
+            train_stats, loss = self.train_minibatch(logprobs[idx].unsqueeze(0), values[idx].unsqueeze(0),
                                                    rewards[idx].unsqueeze(0), queries[idx].unsqueeze(0),
                                                    responses[idx].unsqueeze(0),
                                                    torch.cat([queries[idx], responses[idx]]).unsqueeze(0))
-                all_stats.append(train_stats)
-                if total_loss is None:
-                    total_loss = loss
-                else:
-                    total_loss += loss
+            all_stats.append(train_stats)
         timing['time/ppo/optimize_step'] = time.time() - t
 
         t = time.time()
@@ -288,11 +284,81 @@ class PPOTrainer(pl.LightningModule):
         stats = stats_to_np(stats)
         timing['time/ppo/calc_stats'] = time.time() - t
 
-        self.kl_ctl.update(stats['objective/kl'], self.ppo_params['batch_size'])
+        self.kl_ctl.update(stats['objective/kl'], 1)
 
         timing['time/ppo/total'] = time.time() - t0
         stats.update(timing)
-        return total_loss, stats
+        
+        return loss
+
+#     def step(self, queries, responses, scores):
+#         """
+#         Run a PPO optimisation step.
+
+#         args:
+#             queries (List): List of tensors containing the encoded queries, shape [query_length]
+#             responses (List): List of tensors containing the encoded responses, shape [response_length]
+#             scores (List): tensor containing the scores, shape [batch_size]
+
+#         returns:
+#             train_stats (dict): a summary of the training statistics
+#         """
+
+#         # print(queries[0].shape)
+#         bs = self.ppo_params['batch_size']
+#         assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"
+
+#         timing = dict()
+#         t0 = time.time()
+
+#         response_lengths = [len(r) for r in responses]
+
+#         t = time.time()
+#         logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
+#         timing['time/ppo/forward_pass'] = time.time() - t
+
+#         t = time.time()
+#         rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
+#         timing['time/ppo/compute_rewards'] = time.time() - t
+
+#         t = time.time()
+#         all_stats = []
+#         total_loss = None
+#         idxs = list(range(bs))
+#         for _ in range(self.ppo_params['ppo_epochs']):
+#             random.shuffle(idxs)
+#             for i in range(bs):
+#                 idx = idxs[i]
+#                 train_stats, loss = self.train_minibatch(logprobs[idx].unsqueeze(0), values[idx].unsqueeze(0),
+#                                                    rewards[idx].unsqueeze(0), queries[idx].unsqueeze(0),
+#                                                    responses[idx].unsqueeze(0),
+#                                                    torch.cat([queries[idx], responses[idx]]).unsqueeze(0))
+#                 all_stats.append(train_stats)
+#                 if total_loss is None:
+#                     total_loss = loss
+#                 else:
+#                     total_loss += loss
+#         timing['time/ppo/optimize_step'] = time.time() - t
+
+#         t = time.time()
+#         train_stats = stack_dicts(all_stats)
+
+#         # reshape advantages/ratios such that they are not averaged.
+#         train_stats['policy/advantages'] = torch.flatten(train_stats['policy/advantages']).unsqueeze(0)
+#         train_stats['policy/advantages'] = torch.nan_to_num(train_stats['policy/advantages'], WANDB_PADDING)
+#         train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
+
+#         stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
+#                                        non_score_reward=non_score_reward, train_stats=train_stats,
+#                                        kl_coef=self.kl_ctl.value)
+#         stats = stats_to_np(stats)
+#         timing['time/ppo/calc_stats'] = time.time() - t
+
+#         self.kl_ctl.update(stats['objective/kl'], self.ppo_params['batch_size'])
+
+#         timing['time/ppo/total'] = time.time() - t0
+#         stats.update(timing)
+#         return total_loss, stats
 
     def batched_forward_pass(self, queries, responses):
         """Calculate model outputs in multiple batches."""
