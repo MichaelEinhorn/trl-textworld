@@ -163,12 +163,13 @@ class PPOTrainer(pl.LightningModule):
         else:
             self.kl_ctl = FixedKLController(self.ppo_params['init_kl_coef'])
             
-        # fill Replay Buffer before first step
         
-    def on_train_start(self):
-        self.runGame()
-    def on_batch_end(self):
-        self.runGame()
+    # def on_train_start(self):
+    #     self.runGame()
+    def on_train_epoch_start(self):
+        # train on the same data ppo epochs times before generating a new set
+        if self.current_epoch % self.ppo_params['ppo_epochs'] == 0:
+            self.runGame()
     
         
     def runGame(self):
