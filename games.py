@@ -6,20 +6,6 @@ import textworld.gym
 
 import numpy as np
 
-import pytorch_lightning as pl
-import argparse
-from collections import OrderedDict, deque
-from typing import Tuple, List
-import torch.optim as optim
-from torch.optim import Optimizer
-from torch.utils.data import DataLoader
-
-from ppoValHead import PPOTrainer
-from torchinfo import summary
-from datastructures import ReplayBuffer
-
-import deepspeed
-
 
 def getEnvs(download=True):
     if download:
@@ -115,53 +101,3 @@ class Player:
             else:
                 msg = "  \tavg. steps: {:5.1f}; avg. score: {:4.1f} / {}."
                 print(msg.format(np.mean(self.avg_moves), np.mean(self.avg_scores), self.infos["max_score"]))
-
-
-def train(model_name, single_game=True):
-    from agents import NLPAgent
-    from time import time
-
-    UPDATE_FREQUENCY = 10
-    LOG_FREQUENCY = 10
-
-    buffer = ReplayBuffer(UPDATE_FREQUENCY)
-    agent = NLPAgent(buffer, humanTurns=0)
-
-    if single_game:
-        print("Training")
-        agent.train()  # Tell the agent it should update its parameters.
-        player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
-
-    else:
-        print("Training on 100 games")
-        agent.train()  # Tell the agent it should update its parameters.
-        player = Player(agent, "./training_games/", verbose=False)  # Each game will be seen 5 times.
-
-    ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': 1}
-    ppo_trainer = PPOTrainer(model_name, player, buffer, agent, **ppo_config)
-
-    from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
-    trainer = pl.Trainer(
-        logger=False,
-        accelerator='gpu', devices=1,
-        max_epochs=500,
-        precision=16,
-        strategy=DeepSpeedStrategy(
-            zero_optimization=True,
-            stage=3))
-
-    trainer.fit(ppo_trainer)
-
-
-if __name__ == "__main__":
-    import argparse
-
-    getEnvs()
-    print("generated envs")
-
-    model_name = 'gpt2-xl'
-    # model_name = 'gptj'
-    low_ram = True
-    single_game = True
-
-    train(model_name, single_game)

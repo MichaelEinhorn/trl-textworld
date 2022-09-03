@@ -12,8 +12,12 @@ from transformers import Trainer
 from transformers import TrainingArguments
 from transformers import HfArgumentParser
 
+from datastructures import RejectionBuffer, RejectDataset
+
 import torch
 import numpy as np
+
+from games import Player, getEnvs
 
 # using deepspeed huggingface trainer integreation
 
@@ -50,9 +54,35 @@ class FixedKLController:
     def update(self, current, n_steps):
         pass
 
+from transformers import TrainerCallback
+class CallBackRouter(TrainerCallback):
+    def __init__(self, obj):
+        self.obj = obj
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        if hasattr(obj, 'on_epoch_begin'):
+            self.obj.on_epoch_begin(args, state, control, **kwargs)
+
 
 class RejectionTuner:
-    def __init__(self, model_name, player, agent, **reject_params):
+    default_params = {
+        "lr": 1.41e-5,
+        "adap_kl_ctrl": True,
+        "init_kl_coef": 0.2,
+        "target": 6,
+        "horizon": 10000,
+        "batch_size": 256,
+        "epochs_per_game": 4,
+    }
+
+
+
+    def __init__(self, model_name, player, agent, buffer, train_args, **reject_params):
+
+        self.reject_params = self.default_params
+        self.reject_params.update(reject_params)
+        self.CallBackRouter
+
         self.player = player
 
         # gpt2 and gpt2-xl
@@ -80,7 +110,8 @@ class RejectionTuner:
 
         self.agent = agent
 
-        # print(self.valueHead)
+        self.train_args = train_args
+        self.train_ds = RejectDataset(buffer, self.reject_params['batch_size'])
 
         self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
 
@@ -91,16 +122,59 @@ class RejectionTuner:
         else:
             self.kl_ctl = FixedKLController(self.reject_params['init_kl_coef'])
 
-    def step(self, data):
-        trainer = Trainer(model=self.model, TrainingArguments=train_args, train_dataset=data, tokenizer=self.tokenizer)
+    # data is list of strings
+    def step(self):
+        trainer = Trainer(model=self.model, TrainingArguments=self.train_args, train_dataset=self.train_ds, tokenizer=self.tokenizer)
         trainer.train()
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        epoch = int(state.epoch)
+        if epoch % self.reject_params["epochs_per_game"] == 0:
+            self.runGame()
+
+    def runGame(self):
+        # self is passing the model to do forward passes with
+        self.player.runGame(self, self.ppo_params['batch_size'])
+        self.agent.fillBuffer()
+        scores, queries, responses, values_old, ret_cross, adv_cross = self.agent_buffer.sample(
+            self.reject_params['batch_size'])
+
+        # first part of original step, gets old logprobs and ref logprobs
+        bs = self.reject_params['batch_size']
+        assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"
+
+
+def train(model_name, train_args, single_game=True):
+    from agents import NLPAgent
+    from time import time
+
+    LOG_FREQUENCY = 10
+
+    buffer = RejectionBuffer(min=False)
+    agent = NLPAgent(buffer, humanTurns=0)
+
+    if single_game:
+        print("Training")
+        agent.train()  # Tell the agent it should update its parameters.
+        player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
+
+    else:
+        print("Training on 100 games")
+        agent.train()  # Tell the agent it should update its parameters.
+        player = Player(agent, "./training_games/", verbose=False)  # Each game will be seen 5 times.
+
+    reject_params = {'batch_size': 10}
+    reject_tuner = RejectionTuner(model_name, train_args, player, agent, buffer, train_args, reject_params)
 
 if __name__ == "__main__":
     model_name = 'gpt2-xl'
     # model_name = 'gptj'
-    low_ram = True
     single_game = True
+    getEnvs()
+
 
     train_args = HfArgumentParser.parse_args_into_dataclasses(TrainingArguments)
 
-    reject_tuner = RejectionTuner(model_name, train_args, player, agent)
+
+
+    train(train_args)

@@ -23,7 +23,48 @@ class RollingBuffer:
 
     def clear(self):
         self.queue = deque([])
-        
+
+
+class RejectionBuffer:
+    def __init__(self, min=True):
+        self.values = []
+        self.text = []
+        self.min = min
+
+    def __len__(self):
+        return len(self.values)
+
+    def __iter__(self):
+        return iter(zip(self.text, self.values))
+
+    def append(self, t, v):
+        self.values.append(v)
+        self.text.append(t)
+
+    def reject(self, p, threshType="frac"):
+        if threshType is "frac":
+            idxs = np.argsort(self.values)
+            if not self.min:
+                idxs = idxs[::-1]
+            idxs = idxs[:len(self.values * p)]
+            self.text = self.text[idxs]
+            self.values = self.values[idxs]
+        if threshType is "top n":
+            idxs = np.argsort(self.values)
+            if not self.min:
+                idxs = idxs[::-1]
+            idxs = idxs[:p]
+            self.text = self.text[idxs]
+            self.values = self.values[idxs]
+
+    def clear(self):
+        self.values = []
+        self.text = []
+
+    def sample(self, batch_size):
+        idxs = np.random.choice(len(self.values), batch_size, replace=False)
+        return self.text[idxs], self.values[idxs]
+
 
 class ExperienceSourceDataset(IterableDataset):
     """
@@ -116,6 +157,16 @@ class LineBuffer:
             
 class LineDataset(IterableDataset):
     def __init__(self, buffer: LineBuffer, sample_size: int = 200):
+        self.buffer = buffer
+        self.sample_size = sample_size
+
+    def __iter__(self):
+        lines = self.buffer.sample(self.sample_size)
+        for i in range(len(lines)):
+            yield lines[i]
+
+class RejectDataset(IterableDataset):
+    def __init__(self, buffer: RejectionBuffer, sample_size: int = 200):
         self.buffer = buffer
         self.sample_size = sample_size
 

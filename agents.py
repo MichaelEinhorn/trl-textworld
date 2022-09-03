@@ -17,8 +17,6 @@ import torch.nn.functional as F
 from transformers import top_k_top_p_filtering
 from torch.nn import Identity
 
-from ppoValHead import PPOTrainer
-
 class RandomAgent(textworld.gym.Agent):
     """ Agent that randomly selects a command from the admissible ones. """
 
