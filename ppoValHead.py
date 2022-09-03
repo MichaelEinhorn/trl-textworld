@@ -162,7 +162,7 @@ class PPOTrainer(pl.LightningModule):
                                                self.ppo_params['horizon'])
         else:
             self.kl_ctl = FixedKLController(self.ppo_params['init_kl_coef'])
-            
+
         
     # def on_train_start(self):
     #     self.runGame()
