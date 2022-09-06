@@ -68,6 +68,9 @@ class NLPAgent:
         self.transitions = []
         self.clearTextWorldArt = True
 
+        # PPO trainer uses next values to get a value across transitions
+        self.returnNextValues = True
+
     def train(self):
         self.mode = "train"
         self.stats = {"max": defaultdict(list), "mean": defaultdict(list)}
@@ -211,7 +214,12 @@ class NLPAgent:
         self.memory.append(input_ + action)
 
         if self.mode == "train" and not done:
-            self.transitions.append([None, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), values.to(torch.device("cpu"))])  # Reward will be set on the next call
+            if not self.returnNextValues:
+                self.transitions.append([None, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), values.to(torch.device("cpu"))])  # Reward will be set on the next call
+            else:
+                if len(self.transitions) != 0:
+                    self.transitions[-1][3] = values.to(torch.device("cpu"))
+                self.transitions.append([None, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), torch.tensor(0, type=values.type)])
 
         if done:
             self.last_score = 0  # Will be starting a new episode. Reset the last score.

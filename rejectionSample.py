@@ -60,7 +60,7 @@ class CallBackRouter(TrainerCallback):
         self.obj = obj
 
     def on_epoch_begin(self, args, state, control, **kwargs):
-        if hasattr(obj, 'on_epoch_begin'):
+        if hasattr(self.obj, 'on_epoch_begin'):
             self.obj.on_epoch_begin(args, state, control, **kwargs)
 
 
@@ -81,7 +81,8 @@ class RejectionTuner:
 
         self.reject_params = self.default_params
         self.reject_params.update(reject_params)
-        self.CallBackRouter
+        # calls on epoch begin method
+        self.callBackRouter = CallBackRouter(self)
 
         self.player = player
 
@@ -109,9 +110,11 @@ class RejectionTuner:
         self.config = self.model.config
 
         self.agent = agent
+        self.agent_buffer = buffer
 
         self.train_args = train_args
-        self.train_ds = RejectDataset(buffer, self.reject_params['batch_size'])
+        self.reject_buffer = RejectionBuffer(min=False)
+        self.train_ds = RejectDataset(self.reject_buffer, self.reject_params['batch_size'])
 
         self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
 
@@ -129,19 +132,37 @@ class RejectionTuner:
 
     def on_epoch_begin(self, args, state, control, **kwargs):
         epoch = int(state.epoch)
+        # fills reject dataset's buffer with a new set of experiences
         if epoch % self.reject_params["epochs_per_game"] == 0:
             self.runGame()
 
     def runGame(self):
         # self is passing the model to do forward passes with
-        self.player.runGame(self, self.ppo_params['batch_size'])
+        self.player.runGame(self, self.reject_params['batch_size'])
         self.agent.fillBuffer()
         scores, queries, responses, values_old, ret_cross, adv_cross = self.agent_buffer.sample(
             self.reject_params['batch_size'])
 
         # first part of original step, gets old logprobs and ref logprobs
         bs = self.reject_params['batch_size']
-        assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"
+
+        # removes old experiences and only train on new ones. Remove to train on best of old and new
+        # self.reject_buffer.clear()
+        self.reject_buffer.append()
+
+        for i in range(int(bs)):
+            query = queries[i]
+            response = responses[i]
+            # use returns discounted across multiple transitions, they will be again discounted across tokens in a transition
+            score = ret_cross[i]
+            # use only current rewards
+            # scores_batch = scores[i]
+
+            input_ids = torch.cat([query, response])["input_ids"]
+
+            self.reject_buffer.append(input_ids, score)
+
+        self.reject_buffer.reject(0.5, threshType="frac")
 
 
 def train(model_name, train_args, single_game=True):
@@ -149,8 +170,9 @@ def train(model_name, train_args, single_game=True):
     from time import time
 
     LOG_FREQUENCY = 10
+    UPDATE_FREQUENCY = 10
 
-    buffer = RejectionBuffer(min=False)
+    buffer = ReplayBuffer(UPDATE_FREQUENCY)
     agent = NLPAgent(buffer, humanTurns=0)
 
     if single_game:
@@ -163,7 +185,7 @@ def train(model_name, train_args, single_game=True):
         agent.train()  # Tell the agent it should update its parameters.
         player = Player(agent, "./training_games/", verbose=False)  # Each game will be seen 5 times.
 
-    reject_params = {'batch_size': 10}
+    reject_params = {'batch_size': UPDATE_FREQUENCY}
     reject_tuner = RejectionTuner(model_name, train_args, player, agent, buffer, train_args, reject_params)
 
 if __name__ == "__main__":

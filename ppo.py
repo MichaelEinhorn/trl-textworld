@@ -179,7 +179,7 @@ class PPOTrainer(pl.LightningModule):
         # self is passing the model to do forward passes with
         self.player.runGame(self, self.ppo_params['batch_size'])
         self.agent.fillBuffer()
-        scores, queries, responses, values_old, ret_cross, adv_cross = self.agent_buffer.sample(self.ppo_params['batch_size'])
+        scores, queries, responses, values_next, ret_cross, adv_cross = self.agent_buffer.sample(self.ppo_params['batch_size'])
         
         # first part of original step, gets old logprobs and ref logprobs
         bs = self.ppo_params['batch_size']
@@ -198,7 +198,7 @@ class PPOTrainer(pl.LightningModule):
         rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
         timing['time/ppo/compute_rewards'] = time.time() - t
         
-        self.ppo_buffer.append((scores, queries, responses, values_old, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward))
+        self.ppo_buffer.append((scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward))
 
     def configure_optimizers(self) -> List[Optimizer]:
         """ Initialize Adam optimizer"""
@@ -246,7 +246,7 @@ class PPOTrainer(pl.LightningModule):
 
     def training_step(self, batch, nb_batch):
         # rew, prompt[0], action[0], values, ret_cross, adv_cross
-        scores, queries, responses, values_old, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
+        scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
         """
         Run a PPO optimisation step.
 
@@ -265,13 +265,14 @@ class PPOTrainer(pl.LightningModule):
         t = time.time()
         timing = dict()
         all_stats = []
-        for _ in range(self.ppo_params['ppo_epochs']):
-            idx = 0
-            train_stats, loss = self.train_minibatch(logprobs[idx].unsqueeze(0), values[idx].unsqueeze(0),
+        # moved to start train epoch, loops through dataset ppo_epochs times before generating a new set
+        #for _ in range(self.ppo_params['ppo_epochs']):
+        idx = 0
+        train_stats, loss = self.train_minibatch(logprobs[idx].unsqueeze(0), values[idx].unsqueeze(0),
                                                    rewards[idx].unsqueeze(0), queries[idx].unsqueeze(0),
                                                    responses[idx].unsqueeze(0),
-                                                   torch.cat([queries[idx], responses[idx]]).unsqueeze(0))
-            all_stats.append(train_stats)
+                                                   torch.cat([queries[idx], responses[idx]]).unsqueeze(0), values_next[idx].unsqueeze(0))
+        all_stats.append(train_stats)
         timing['time/ppo/optimize_step'] = time.time() - t
 
         t = time.time()
@@ -290,7 +291,7 @@ class PPOTrainer(pl.LightningModule):
 
         self.kl_ctl.update(stats['objective/kl'], 1)
 
-        timing['time/ppo/total'] = time.time() - t0
+        # timing['time/ppo/total'] = time.time() - t0
         stats.update(timing)
         
         return loss
@@ -400,9 +401,9 @@ class PPOTrainer(pl.LightningModule):
                 all_ref_logprobs.append(ref_logprobs[j, start:end])
         return all_logprobs, all_ref_logprobs, all_values
 
-    def train_minibatch(self, logprobs, values, rewards, query, response, model_input):
+    def train_minibatch(self, logprobs, values, rewards, query, response, model_input, values_next=0.0):
         """Train one PPO minibatch"""
-        loss_p, loss_v, train_stats = self.loss(logprobs, values, rewards, query, response, model_input)
+        loss_p, loss_v, train_stats = self.loss(logprobs, values, rewards, query, response, model_input, values_next)
         loss = loss_p + loss_v
         # self.optimizer.zero_grad()
         # loss.backward()
@@ -421,14 +422,14 @@ class PPOTrainer(pl.LightningModule):
             rewards.append(reward)
         return rewards, non_score_rewards
 
-    def loss(self, old_logprobs, values, rewards, query, response, model_input):
+    def loss(self, old_logprobs, values, rewards, query, response, model_input, values_next=0.0):
         """Calculate policy and value losses."""
         lastgaelam = 0
         advantages_reversed = []
         gen_len = response.shape[1]
 
         for t in reversed(range(gen_len)):
-            nextvalues = values[:, t + 1] if t < gen_len - 1 else 0.0
+            nextvalues = values[:, t + 1] if t < gen_len - 1 else values_next
             delta = rewards[:, t] + self.ppo_params['gamma'] * (nextvalues - values[:, t])
             lastgaelam = delta + self.ppo_params['gamma'] * self.ppo_params['lam'] * lastgaelam
             advantages_reversed.append(lastgaelam)
