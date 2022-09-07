@@ -42,14 +42,14 @@ class RejectionBuffer:
         self.text.append(t)
 
     def reject(self, p, threshType="frac"):
-        if threshType is "frac":
+        if threshType == "frac":
             idxs = np.argsort(self.values)
             if not self.min:
                 idxs = idxs[::-1]
             idxs = idxs[:len(self.values * p)]
             self.text = self.text[idxs]
             self.values = self.values[idxs]
-        if threshType is "top n":
+        if threshType == "top n":
             idxs = np.argsort(self.values)
             if not self.min:
                 idxs = idxs[::-1]
@@ -103,7 +103,7 @@ class ReplayBuffer:
         """
         self.buffer.append(experience)
 
-    def sample(self, batch_size, data_collator):
+    def sample(self, batch_size):
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         # original states, actions, rewards, dones, next_states
         scores, queries, responses, values, ret_cross, adv_cross = zip(*[self.buffer[idx] for idx in indices])
@@ -122,13 +122,12 @@ class RLDataset(IterableDataset):
         sample_size: number of experiences to sample at a time
     """
     
-    def __init__(self, buffer: ReplayBuffer, data_collator, sample_size: int = 200):
+    def __init__(self, buffer: ReplayBuffer, sample_size: int = 200):
         self.buffer = buffer
         self.sample_size = sample_size
-        self.data_collator = data_collator
 
     def __iter__(self):
-        scores, queries, responses, values, ret_cross, adv_cross = self.buffer.sample(self.sample_size, self.data_collator)
+        scores, queries, responses, values, ret_cross, adv_cross = self.buffer.sample(self.sample_size)
         for i in range(len(scores)):
             yield scores[i], queries[i], responses[i], values[i], ret_cross[i], adv_cross[i]
             
@@ -148,7 +147,7 @@ class LineBuffer:
     def append(self, experience):
         self.buffer.append(experience)
 
-    def sample(self, batch_size, data_collator):
+    def sample(self, batch_size):
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         # original states, actions, rewards, dones, next_states
         lines = [self.buffer[idx] for idx in indices]

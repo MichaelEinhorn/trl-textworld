@@ -197,8 +197,8 @@ class PPOTrainer(pl.LightningModule):
         t = time.time()
         rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
         timing['time/ppo/compute_rewards'] = time.time() - t
-        
-        self.ppo_buffer.append((scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward))
+        for lineItem in zip(scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward):
+            self.ppo_buffer.append(lineItem)
 
     def configure_optimizers(self) -> List[Optimizer]:
         """ Initialize Adam optimizer"""
@@ -378,6 +378,7 @@ class PPOTrainer(pl.LightningModule):
             response_batch = responses[i * fbs:(i + 1) * fbs]
             input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])[
                 "input_ids"]
+            
             with torch.no_grad():
                 # # logits, _, v = self.model(input_ids)
                 # lmOut = self.model(input_ids, output_hidden_states=True)
@@ -386,7 +387,7 @@ class PPOTrainer(pl.LightningModule):
                 # v = self.valueHead(hidden_state)
                 # # ref_logits, _, _ = self.ref_model(input_ids)
                 # ref_logits = self.ref_model(input_ids).logits
-                
+                input_ids = input_ids.to(self.device)
                 logits, ref_logits, v = self.forward(input_ids, outputVals=True, outputRef=True)
 
                 logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
@@ -535,8 +536,11 @@ def train(model_name, single_game=True):
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(
-            zero_optimization=True,
-            stage=3))
+            stage=3,
+            offload_optimizer=True,
+            offload_parameters=True,
+            ),
+        )
 
     trainer.fit(ppo_trainer)
 

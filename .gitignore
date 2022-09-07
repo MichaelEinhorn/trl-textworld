@@ -2,7 +2,7 @@ games/
 testing_games/
 training_games/
 *.pt
-
+checkpoints/
 *.bak
 .gitattributes
 .last_checked

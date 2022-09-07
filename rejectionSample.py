@@ -75,7 +75,7 @@ class RejectionTuner:
         "epochs_per_game": 4,
     }
 
-
+    
 
     def __init__(self, model_name, player, agent, buffer, train_args, **reject_params):
 
@@ -124,6 +124,36 @@ class RejectionTuner:
                                                self.reject_params['horizon'])
         else:
             self.kl_ctl = FixedKLController(self.reject_params['init_kl_coef'])
+    
+    
+    def __call__(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False):
+        return self.forward(input_ids, use_cache, past_key_values, outputVals, outputRef)
+    # values variable for compatability
+    def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False):
+        if past_key_values is None:
+            lmOut = self.model(input_ids, output_hidden_states=False, use_cache=use_cache)
+        else:
+            lmOut = self.model(input_ids, output_hidden_states=False, use_cache=use_cache, past_key_values=past_key_values)
+        # print(dir(lmOut))
+        logits = lmOut.logits
+        
+        output = [logits]
+        
+        if use_cache:
+            cache = lmOut.past_key_values
+            output.append(cache)
+        
+        if outputRef:
+            with torch.no_grad():
+                ref_logits = self.ref_model(input_ids).logits
+                output.append(ref_logits)
+                
+        if outputVals:
+            v = torch.tensor(0)
+            output.append(v)
+        # ref_logits, _, _ = self.ref_model(input_ids)
+        
+        return tuple(output)
 
     # data is list of strings
     def step(self):

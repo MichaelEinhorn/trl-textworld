@@ -219,7 +219,7 @@ class NLPAgent:
             else:
                 if len(self.transitions) != 0:
                     self.transitions[-1][3] = values.to(torch.device("cpu"))
-                self.transitions.append([None, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), torch.tensor(0, type=values.type)])
+                self.transitions.append([None, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), torch.tensor(0, dtype=values.dtype)])
 
         if done:
             self.last_score = 0  # Will be starting a new episode. Reset the last score.
