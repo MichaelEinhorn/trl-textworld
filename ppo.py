@@ -207,7 +207,7 @@ class PPOTrainer(pl.LightningModule):
         return [optimizer]
     
     def __dataloader(self) -> DataLoader:
-        dataset = LineDataset(self.ppo_buffer, self.ppo_params['batch_size'])
+        dataset = RLDataset(self.ppo_buffer, self.ppo_params['batch_size'])
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=1,
                                 )
@@ -246,7 +246,9 @@ class PPOTrainer(pl.LightningModule):
 
     def training_step(self, batch, nb_batch):
         # rew, prompt[0], action[0], values, ret_cross, adv_cross
-        scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
+        scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
+        print(responses.shape)
+        fbs = scores.shape[0]
         """
         Run a PPO optimisation step.
 
@@ -267,11 +269,11 @@ class PPOTrainer(pl.LightningModule):
         all_stats = []
         # moved to start train epoch, loops through dataset ppo_epochs times before generating a new set
         #for _ in range(self.ppo_params['ppo_epochs']):
-        idx = 0
-        train_stats, loss = self.train_minibatch(logprobs[idx].unsqueeze(0), values[idx].unsqueeze(0),
-                                                   rewards[idx].unsqueeze(0), queries[idx].unsqueeze(0),
-                                                   responses[idx].unsqueeze(0),
-                                                   torch.cat([queries[idx], responses[idx]]).unsqueeze(0), values_next[idx].unsqueeze(0))
+        train_stats, loss = self.train_minibatch(logprobs, values,
+                                                rewards, queries,
+                                                responses,
+                                                model_input, lengths,
+                                                values_next=values_next)
         all_stats.append(train_stats)
         timing['time/ppo/optimize_step'] = time.time() - t
 
@@ -289,7 +291,7 @@ class PPOTrainer(pl.LightningModule):
         stats = stats_to_np(stats)
         timing['time/ppo/calc_stats'] = time.time() - t
 
-        self.kl_ctl.update(stats['objective/kl'], 1)
+        self.kl_ctl.update(stats['objective/kl'], fbs)
 
         # timing['time/ppo/total'] = time.time() - t0
         stats.update(timing)
@@ -376,8 +378,9 @@ class PPOTrainer(pl.LightningModule):
         for i in range(int(bs / fbs)):
             query_batch = queries[i * fbs:(i + 1) * fbs]
             response_batch = responses[i * fbs:(i + 1) * fbs]
-            input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])[
-                "input_ids"]
+            # input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])[
+            #     "input_ids"]
+            input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])
             
             with torch.no_grad():
                 # # logits, _, v = self.model(input_ids)
@@ -402,10 +405,20 @@ class PPOTrainer(pl.LightningModule):
                 all_ref_logprobs.append(ref_logprobs[j, start:end])
         return all_logprobs, all_ref_logprobs, all_values
 
-    def train_minibatch(self, logprobs, values, rewards, query, response, model_input, values_next=0.0):
+    def train_minibatch(self, logprobs, values, rewards, query, response, model_input, lengths, values_next=(0.0,)):
         """Train one PPO minibatch"""
-        loss_p, loss_v, train_stats = self.loss(logprobs, values, rewards, query, response, model_input, values_next)
-        loss = loss_p + loss_v
+        loss_total = None
+        logits, vpred = self.forward(model_input, outputVals=True)
+        for i in range(logits.shape[0]):
+            # keep batch dim
+            loss_p, loss_v, train_stats = self.loss(logits[i:i+1], vpred[i:i+1], logprobs[i:i+1], values[i:i+1], rewards[i:i+1], query[i:i+1],
+                                                    response[i:i+1], model_input[i:i+1], lengths[i], values_next[i:i+1])
+            loss = loss_p + loss_v
+
+            if loss_total is None:
+                loss_total = loss
+            else:
+                loss_total += loss
         # self.optimizer.zero_grad()
         # loss.backward()
         # self.optimizer.step()
@@ -423,11 +436,13 @@ class PPOTrainer(pl.LightningModule):
             rewards.append(reward)
         return rewards, non_score_rewards
 
-    def loss(self, old_logprobs, values, rewards, query, response, model_input, values_next=0.0):
+    def loss(self, logits, vpred, old_logprobs, values, rewards, query, response, model_input, lengths, values_next=0.0):
         """Calculate policy and value losses."""
         lastgaelam = 0
         advantages_reversed = []
-        gen_len = response.shape[1]
+        # gen_len = response.shape[1]
+        gen_len = lengths[1]
+        total_len = lengths[2]
 
         for t in reversed(range(gen_len)):
             nextvalues = values[:, t + 1] if t < gen_len - 1 else values_next
@@ -439,13 +454,14 @@ class PPOTrainer(pl.LightningModule):
         returns = advantages + values
         advantages = whiten(advantages)
         advantages = advantages.detach()
-        
-        logits, vpred = self.forward(model_input, outputVals=True)
+
+        # computed batched before this method called
+        # logits, vpred = self.forward(model_input, outputVals=True)
         
         logprob = logprobs_from_logits(logits[:, :-1, :], model_input[:, 1:])
 
         # only the generation part of the values/logprobs is needed
-        logprob, vpred = logprob[:, -gen_len:], vpred[:, -gen_len - 1:-1]
+        logprob, vpred = logprob[:, total_len-gen_len:total_len], vpred[:, total_len-gen_len - 1:total_len-1]
 
         vpredclipped = clip_by_value(vpred,
                                      values - self.ppo_params["cliprange_value"],

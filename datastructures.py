@@ -2,6 +2,7 @@ from collections import deque
 import numpy as np
 from torch.utils.data.dataset import IterableDataset
 from typing import Iterable, Callable
+import torch
 
 class RollingBuffer:
     def __init__(self, max_size):
@@ -112,24 +113,28 @@ class ReplayBuffer:
         # return (np.array(scores, dtype=np.float32), np.array(queries), np.array(responses),
         #         np.array(values, dtype=np.float32), np.array(ret_cross, dtype=np.float32), np.array(adv_cross, dtype=np.float32))
 
+class mixedCollator:
+    def __init__(self, data_collator):
+        self.data_collator = data_collator
+
+    def __call__(self, lineItem):
+        collated = []
+        for item in lineItem:
+
+
 
 class RLDataset(IterableDataset):
-    """
-    Iterable Dataset containing the ReplayBuffer
-    which will be updated with new experiences during training
-    Args:
-        buffer: replay buffer
-        sample_size: number of experiences to sample at a time
-    """
-    
     def __init__(self, buffer: ReplayBuffer, sample_size: int = 200):
         self.buffer = buffer
         self.sample_size = sample_size
 
     def __iter__(self):
-        scores, queries, responses, values, ret_cross, adv_cross = self.buffer.sample(self.sample_size)
-        for i in range(len(scores)):
-            yield scores[i], queries[i], responses[i], values[i], ret_cross[i], adv_cross[i]
+        scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = self.buffer.sample(self.sample_size)
+        for i in range(0, len(scores)):
+            # padding matches the batches but this means padded querry + padded response is not padded (querry + response)
+            model_input = torch.cat([queries[i], responses[i]])
+            lengths = (queries[i].shape[0], responses[i].shape[0], model_input.shape[0])
+            yield scores[i], queries[i], responses[i], model_input, lengths, values[i], ret_cross[i], adv_cross[i], logprobs[i], ref_logprobs[i], values[i], rewards[i], non_score_reward[i]
             
 class LineBuffer:
     """
