@@ -3,6 +3,8 @@ import numpy as np
 from torch.utils.data.dataset import IterableDataset
 from typing import Iterable, Callable
 import torch
+from core import padded_stack
+
 
 class RollingBuffer:
     def __init__(self, max_size):
@@ -113,15 +115,6 @@ class ReplayBuffer:
         # return (np.array(scores, dtype=np.float32), np.array(queries), np.array(responses),
         #         np.array(values, dtype=np.float32), np.array(ret_cross, dtype=np.float32), np.array(adv_cross, dtype=np.float32))
 
-class mixedCollator:
-    def __init__(self, data_collator):
-        self.data_collator = data_collator
-
-    def __call__(self, lineItem):
-        collated = []
-        for item in lineItem:
-
-
 
 class RLDataset(IterableDataset):
     def __init__(self, buffer: ReplayBuffer, sample_size: int = 200):
@@ -129,13 +122,37 @@ class RLDataset(IterableDataset):
         self.sample_size = sample_size
 
     def __iter__(self):
-        scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = self.buffer.sample(self.sample_size)
+        scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = self.buffer.sample(
+            self.sample_size)
         for i in range(0, len(scores)):
             # padding matches the batches but this means padded querry + padded response is not padded (querry + response)
             model_input = torch.cat([queries[i], responses[i]])
             lengths = (queries[i].shape[0], responses[i].shape[0], model_input.shape[0])
-            yield scores[i], queries[i], responses[i], model_input, lengths, values[i], ret_cross[i], adv_cross[i], logprobs[i], ref_logprobs[i], values[i], rewards[i], non_score_reward[i]
-            
+            yield scores[i], queries[i], responses[i], model_input, lengths, values[i], ret_cross[i], adv_cross[i], \
+                  logprobs[i], ref_logprobs[i], values[i], rewards[i], non_score_reward[i]
+
+
+class RLDatasetCollator():
+    def __init__(self, text_collator=None):
+        self.text_collator = text_collator
+
+    def __call__(self, data):
+        scores, queries, responses, model_input, lengths, values, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = data
+        return (torch.stack(scores),
+                self.text_collator(queries),
+                self.text_collator(responses),
+                self.text_collator(model_input),
+                torch.stack(lengths),
+                torch.stack(values),
+                torch.stack(ret_cross),
+                torch.stack(adv_cross),
+                padded_stack(logprobs),
+                padded_stack(ref_logprobs),
+                torch.stack(values),
+                torch.stack(rewards),
+                torch.stack(non_score_reward)
+                )
+
 class LineBuffer:
     """
     Replay Buffer for storing past experiences allowing the agent to learn from them
@@ -158,7 +175,8 @@ class LineBuffer:
         lines = [self.buffer[idx] for idx in indices]
 
         return lines
-            
+
+
 class LineDataset(IterableDataset):
     def __init__(self, buffer: LineBuffer, sample_size: int = 200):
         self.buffer = buffer
@@ -169,6 +187,7 @@ class LineDataset(IterableDataset):
         for i in range(len(lines)):
             yield lines[i]
 
+
 class RejectDataset(IterableDataset):
     def __init__(self, buffer: RejectionBuffer, sample_size: int = 200):
         self.buffer = buffer
@@ -178,4 +197,3 @@ class RejectDataset(IterableDataset):
         lines = self.buffer.sample(self.sample_size)
         for i in range(len(lines)):
             yield lines[i]
-            

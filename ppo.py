@@ -12,6 +12,7 @@ from datastructures import RLDataset
 from datastructures import ReplayBuffer
 from datastructures import LineDataset
 from datastructures import LineBuffer
+from datastructures import RLDatasetCollator
 
 import pytorch_lightning as pl
 import argparse
@@ -210,6 +211,7 @@ class PPOTrainer(pl.LightningModule):
         dataset = RLDataset(self.ppo_buffer, self.ppo_params['batch_size'])
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=1,
+                                collate_fn=RLDatasetCollator(text_collator=self.data_collator)
                                 )
         return dataloader
 
