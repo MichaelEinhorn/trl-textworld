@@ -133,9 +133,7 @@ def build_bert_batch_from_txt(text_list, tokenizer, device):
     return padded_tensors, attention_masks
 
 # https://github.com/jdb78/pytorch-forecasting/blob/master/pytorch_forecasting/utils.py
-def padded_stack(
-    tensors: List[torch.Tensor], side: str = "right", mode: str = "constant", value: Union[int, float] = 0
-) -> torch.Tensor:
+def padded_stack(tensors, side: str = "right", mode: str = "constant", value=0):
     """
     Stack tensors along first dimension and pad them along last dimension to ensure their size is equal.
     Args:
