@@ -182,10 +182,13 @@ class NLPAgent:
         # grabs value of last token in action
         values = 0
         # convert text to tensor
-        prompt = "hello"
+        if self.testCountLetters is not None:
+            prompt = "hello"
+            print(prompt)
         input_ids = lightmodel.tokenizer.encode(prompt, add_special_tokens=True, return_tensors="pt")
-        # print("prompt tokens: ", input_ids.shape)
-        # print(input_)
+        if self.testCountLetters is None:
+            print("prompt tokens: ", input_ids.shape)
+            print(input_)
 
         if self.humanTurnsRem > 0:
             action = input()
@@ -203,8 +206,8 @@ class NLPAgent:
             # run model
             with torch.no_grad():
                 # get logits, only get last value
-                # input_ids = input_ids.to(lightmodel.device)
-                input_ids = input_ids.to(lightmodel.model.device)
+                input_ids = input_ids.to(lightmodel.getDevice())
+                # input_ids = input_ids.to(lightmodel.model.device)
                 if cache is None:
                     logits, cache, values = lightmodel(input_ids, use_cache=True, outputVals=True)
                 else:
@@ -252,7 +255,5 @@ class NLPAgent:
                 if len(self.transitions) != 0 and self.transitions[-1] != "end episode":
                     self.transitions[-1][3] = values.to(torch.device("cpu"))
                 self.transitions.append([reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), torch.tensor(0, dtype=values.dtype), False])
-
-        
 
         return action

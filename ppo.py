@@ -168,6 +168,9 @@ class PPOTrainer(pl.LightningModule):
         else:
             self.kl_ctl = FixedKLController(self.ppo_params['init_kl_coef'])
 
+    def getDevice(self):
+        return self.device
+
         
     # def on_train_start(self):
     #     self.runGame()

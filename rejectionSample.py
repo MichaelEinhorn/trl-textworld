@@ -124,8 +124,10 @@ class RejectionTuner:
                                                self.reject_params['horizon'])
         else:
             self.kl_ctl = FixedKLController(self.reject_params['init_kl_coef'])
-    
-    
+
+    def getDevice(self):
+        return self.model.device
+
     def __call__(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False):
         return self.forward(input_ids, use_cache, past_key_values, outputVals, outputRef)
     # values variable for compatability
