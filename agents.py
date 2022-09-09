@@ -72,6 +72,8 @@ class NLPAgent:
         self.returnNextValues = True
         
         self.testCountLetters = ('e', 'E') # None
+        
+        self.rewValStat = []
 
     def train(self):
         self.mode = "train"
@@ -180,9 +182,10 @@ class NLPAgent:
         # grabs value of last token in action
         values = 0
         # convert text to tensor
+        prompt = "hello"
         input_ids = lightmodel.tokenizer.encode(prompt, add_special_tokens=True, return_tensors="pt")
-        print("prompt tokens: ", input_ids.shape)
-        print(input_)
+        # print("prompt tokens: ", input_ids.shape)
+        # print(input_)
 
         if self.humanTurnsRem > 0:
             action = input()
@@ -200,7 +203,8 @@ class NLPAgent:
             # run model
             with torch.no_grad():
                 # get logits, only get last value
-                input_ids = input_ids.to(lightmodel.device)
+                # input_ids = input_ids.to(lightmodel.device)
+                input_ids = input_ids.to(lightmodel.model.device)
                 if cache is None:
                     logits, cache, values = lightmodel(input_ids, use_cache=True, outputVals=True)
                 else:
@@ -239,6 +243,8 @@ class NLPAgent:
                 reward = torch.tensor(count, dtype=values.dtype)
                 print("reward")
                 print(reward)
+                self.rewValStat.append([reward, values.detach().cpu().numpy()])
+                np.savetxt("rewVals.csv", self.rewValStat, delimiter=',')
             
             if not self.returnNextValues:
                 self.transitions.append([reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), values.to(torch.device("cpu")), False])  # Reward will be set on the next call

@@ -1,5 +1,3 @@
-import datasets
-from datasets import load_dataset
 import math
 import os
 import sys
@@ -11,8 +9,10 @@ import transformers
 from transformers import Trainer
 from transformers import TrainingArguments
 from transformers import HfArgumentParser
+from torchinfo import summary
 
-from datastructures import RejectionBuffer, RejectDataset
+from transformers import DataCollatorForLanguageModeling
+from datastructures import RejectionBuffer, RejectDataset, ReplayBuffer
 
 import torch
 import numpy as np
@@ -77,10 +77,10 @@ class RejectionTuner:
 
     
 
-    def __init__(self, model_name, player, agent, buffer, train_args, **reject_params):
+    def __init__(self, model_name, player, agent, buffer, train_args=None):
 
         self.reject_params = self.default_params
-        self.reject_params.update(reject_params)
+        # self.reject_params.update(reject_params)
         # calls on epoch begin method
         self.callBackRouter = CallBackRouter(self)
 
@@ -149,15 +149,15 @@ class RejectionTuner:
                 output.append(ref_logits)
                 
         if outputVals:
-            v = torch.tensor(0)
+            v = torch.tensor([[[0]]])
             output.append(v)
         # ref_logits, _, _ = self.ref_model(input_ids)
         
         return tuple(output)
 
     # data is list of strings
-    def step(self):
-        trainer = Trainer(model=self.model, TrainingArguments=self.train_args, train_dataset=self.train_ds, tokenizer=self.tokenizer)
+    def startTraining(self):
+        trainer = Trainer(model=self.model, args=self.train_args, train_dataset=self.train_ds, tokenizer=self.tokenizer, callbacks=[self.callBackRouter])
         trainer.train()
 
     def on_epoch_begin(self, args, state, control, **kwargs):
@@ -165,6 +165,7 @@ class RejectionTuner:
         # fills reject dataset's buffer with a new set of experiences
         if epoch % self.reject_params["epochs_per_game"] == 0:
             self.runGame()
+        print("epoch ", epoch)
 
     def runGame(self):
         # self is passing the model to do forward passes with
@@ -216,7 +217,9 @@ def train(model_name, train_args, single_game=True):
         player = Player(agent, "./training_games/", verbose=False)  # Each game will be seen 5 times.
 
     reject_params = {'batch_size': UPDATE_FREQUENCY}
-    reject_tuner = RejectionTuner(model_name, train_args, player, agent, buffer, train_args, reject_params)
+    #         def __init__(self, model_name, player, agent, buffer, train_args, **reject_params):
+    reject_tuner = RejectionTuner(model_name, player, agent, buffer, train_args=train_args)
+    reject_tuner.startTraining()
 
 if __name__ == "__main__":
     model_name = 'gpt2-xl'
@@ -224,9 +227,11 @@ if __name__ == "__main__":
     single_game = True
     getEnvs()
 
-
-    train_args = HfArgumentParser.parse_args_into_dataclasses(TrainingArguments)
-
-
-
-    train(train_args)
+    print(TrainingArguments)
+    parser = HfArgumentParser(TrainingArguments)
+    train_args, unknown_args = parser.parse_args_into_dataclasses(return_remaining_strings=True)
+    print(train_args)
+    print(unknown_args)
+    train(model_name, train_args, single_game)
+    
+# deepspeed --num_gpus=1 rejectionSample.py --deepspeed ds_config_zero2.json --per_device_train_batch_size 1 --output_dir output_dir --overwrite_output_dir --fp16 --do_train --max_train_samples 500 --num_train_epochs 1

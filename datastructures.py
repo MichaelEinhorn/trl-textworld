@@ -39,6 +39,9 @@ class RejectionBuffer:
 
     def __iter__(self):
         return iter(zip(self.text, self.values))
+    
+    def __len__(self):
+        return len(self.values)
 
     def append(self, t, v):
         self.values.append(v)
@@ -193,6 +196,9 @@ class RejectDataset(IterableDataset):
     def __init__(self, buffer: RejectionBuffer, sample_size: int = 200):
         self.buffer = buffer
         self.sample_size = sample_size
+        
+    def __len__(self):
+        return len(self.buffer)
 
     def __iter__(self):
         lines = self.buffer.sample(self.sample_size)

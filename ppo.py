@@ -592,7 +592,7 @@ def train(model_name, single_game=True):
         strategy=DeepSpeedStrategy(
             stage=3,
             offload_optimizer=True,
-            offload_parameters=True,
+            offload_parameters=False,
             ),
         )
 
