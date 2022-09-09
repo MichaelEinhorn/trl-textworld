@@ -122,14 +122,13 @@ class RLDataset(IterableDataset):
         self.sample_size = sample_size
 
     def __iter__(self):
-        scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = self.buffer.sample(
-            self.sample_size)
+        data = self.buffer.sample(self.sample_size)
+        scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
         for i in range(0, len(scores)):
             # padding matches the batches but this means padded querry + padded response is not padded (querry + response)
             model_input = torch.cat([queries[i], responses[i]])
             lengths = (queries[i].shape[0], responses[i].shape[0], model_input.shape[0])
-            yield scores[i], queries[i], responses[i], model_input, lengths, values[i], ret_cross[i], adv_cross[i], \
-                  logprobs[i], ref_logprobs[i], values[i], rewards[i], non_score_reward[i]
+            yield scores[i], queries[i], responses[i], model_input, lengths, values_next[i], ret_cross[i], adv_cross[i], logprobs[i], ref_logprobs[i], values[i], rewards[i], non_score_reward[i]
 
 
 class RLDatasetCollator():
@@ -137,20 +136,22 @@ class RLDatasetCollator():
         self.text_collator = text_collator
 
     def __call__(self, data):
-        scores, queries, responses, model_input, lengths, values, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = data
-        return (torch.stack(scores),
+        scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
+        # print(values)
+        values = tuple([torch.squeeze(v, 1) for v in values])
+        return (torch.tensor(scores),
                 self.text_collator(queries),
                 self.text_collator(responses),
                 self.text_collator(model_input),
-                torch.stack(lengths),
-                torch.stack(values),
-                torch.stack(ret_cross),
-                torch.stack(adv_cross),
+                torch.tensor(lengths),
+                torch.tensor(values_next),
+                torch.tensor(ret_cross),
+                torch.tensor(adv_cross),
                 padded_stack(logprobs),
                 padded_stack(ref_logprobs),
-                torch.stack(values),
-                torch.stack(rewards),
-                torch.stack(non_score_reward)
+                padded_stack(values),
+                padded_stack(rewards),
+                padded_stack(non_score_reward)
                 )
 
 class LineBuffer:

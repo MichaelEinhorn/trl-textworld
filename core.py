@@ -145,6 +145,9 @@ def padded_stack(tensors, side: str = "right", mode: str = "constant", value=0):
         torch.Tensor: stacked tensor
     """
     full_size = max([x.size(-1) for x in tensors])
+    # print(full_size)
+    # for x in tensors:
+    #     print(x.shape)
 
     def make_padding(pad):
         if side == "left":

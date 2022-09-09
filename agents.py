@@ -51,8 +51,8 @@ class HumanAgent(textworld.gym.Agent):
 class NLPAgent:
     """ Hugging Face Transformer Agent """
 
-    GAMMA = 0.9
-    MEMORY_LEN = 3
+    GAMMA = 0.0
+    MEMORY_LEN = 0
 
     def __init__(self, buffer, humanTurns=0) -> None:
         self._initialized = False
@@ -70,6 +70,8 @@ class NLPAgent:
 
         # PPO trainer uses next values to get a value across transitions
         self.returnNextValues = True
+        
+        self.testCountLetters = ('e', 'E') # None
 
     def train(self):
         self.mode = "train"
@@ -101,7 +103,10 @@ class NLPAgent:
         else:
             R = last_values.data
         for t in reversed(range(len(self.transitions))):
-            rewards, _, _, values = self.transitions[t]
+            # dont discount between episodes
+            rewards, _, _, values, done = self.transitions[t]
+            if done:
+                R = 0
             R = rewards + self.GAMMA * R
             adv = R - values
             returns.append(R)
@@ -112,11 +117,9 @@ class NLPAgent:
     def fillBuffer(self):
         # get discounted returns and advantages across multiple actions. Currently not used
         returns, advantages = self._discount_rewards()
-        
-        output = []
 
         for t in reversed(range(len(self.transitions))):
-            rew, prompt, action, values = self.transitions[t]
+            rew, prompt, action, values, done = self.transitions[t]
             ret_cross = returns[t]
             adv_cross = advantages[t]
             # returns and advantages across multiple actions
@@ -136,14 +139,27 @@ class NLPAgent:
                 reward += 100
             if infos["lost"]:
                 reward -= 100
-
-            self.transitions[-1][0] = reward  # Update reward information. Was initialized as none
+            
+            if self.testCountLetters is None:
+                self.transitions[-1][0] = reward  # Update reward information. Was initialized as none
 
             self.no_train_step += 1
 
             self.stats["max"]["score"].append(score)
 
     def act(self, obs: str, score: int, done: bool, infos: Mapping[str, Any], lightmodel) -> Optional[str]:
+        
+        # notification of done does not have a new state
+        if done:
+            self.last_score = 0  # Will be starting a new episode. Reset the last score.
+            self.memory.clear()
+            self.clearTextWorldArt = True
+            self.humanTurnsRem = self.humanTurns
+            # mark last transition of episode
+            if len(self.transitions) != 0:
+                self.transitions[-1][4] = True
+            return "look"
+        
         if self.clearTextWorldArt:
             self.clearTextWorldArt = False
             if "Welcome to TextWorld!" in obs:
@@ -214,17 +230,23 @@ class NLPAgent:
         self.memory.append(input_ + action)
 
         if self.mode == "train" and not done:
+            reward = None
+            if self.testCountLetters is not None:
+                count = 0
+                for letter in self.testCountLetters:
+                    count += action.count(letter)
+                # count /= len(action)
+                reward = torch.tensor(count, dtype=values.dtype)
+                print("reward")
+                print(reward)
+            
             if not self.returnNextValues:
-                self.transitions.append([None, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), values.to(torch.device("cpu"))])  # Reward will be set on the next call
+                self.transitions.append([reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), values.to(torch.device("cpu")), False])  # Reward will be set on the next call
             else:
-                if len(self.transitions) != 0:
+                if len(self.transitions) != 0 and self.transitions[-1] != "end episode":
                     self.transitions[-1][3] = values.to(torch.device("cpu"))
-                self.transitions.append([None, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), torch.tensor(0, dtype=values.dtype)])
+                self.transitions.append([reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), torch.tensor(0, dtype=values.dtype), False])
 
-        if done:
-            self.last_score = 0  # Will be starting a new episode. Reset the last score.
-            self.memory.clear()
-            self.clearTextWorldArt = True
-            self.humanTurnsRem = self.humanTurns
+        
 
         return action

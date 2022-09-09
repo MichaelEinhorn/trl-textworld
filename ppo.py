@@ -77,8 +77,8 @@ class PPOTrainer(pl.LightningModule):
 
     default_params = {
         "lr": 1.41e-5,
-        "adap_kl_ctrl": True,
-        "init_kl_coef": 0.2,
+        "adap_kl_ctrl": False,
+        "init_kl_coef": 0,
         "target": 6,
         "horizon": 10000,
         "gamma": 1,
@@ -130,6 +130,7 @@ class PPOTrainer(pl.LightningModule):
             self.model = GPT2LMHeadModel.from_pretrained(model_name)
             self.ref_model = GPT2LMHeadModel.from_pretrained(model_name)
             self.tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+            self.tokenizer.pad_token = self.tokenizer.unk_token
         elif model_name == 'gptj':
             from transformers import GPT2Tokenizer, GPTJForCausalLM
             if False:
@@ -210,7 +211,7 @@ class PPOTrainer(pl.LightningModule):
     def __dataloader(self) -> DataLoader:
         dataset = RLDataset(self.ppo_buffer, self.ppo_params['batch_size'])
         dataloader = DataLoader(dataset=dataset,
-                                batch_size=1,
+                                batch_size=self.ppo_params['forward_batch_size'],
                                 collate_fn=RLDatasetCollator(text_collator=self.data_collator)
                                 )
         return dataloader
@@ -249,7 +250,7 @@ class PPOTrainer(pl.LightningModule):
     def training_step(self, batch, nb_batch):
         # rew, prompt[0], action[0], values, ret_cross, adv_cross
         scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
-        print(responses.shape)
+        
         fbs = scores.shape[0]
         """
         Run a PPO optimisation step.
@@ -380,9 +381,7 @@ class PPOTrainer(pl.LightningModule):
         for i in range(int(bs / fbs)):
             query_batch = queries[i * fbs:(i + 1) * fbs]
             response_batch = responses[i * fbs:(i + 1) * fbs]
-            # input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])[
-            #     "input_ids"]
-            input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])
+            input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])["input_ids"]
             
             with torch.no_grad():
                 # # logits, _, v = self.model(input_ids)
@@ -405,16 +404,41 @@ class PPOTrainer(pl.LightningModule):
                 all_values.append(v[j, start - 1:end - 1])
                 all_logprobs.append(logprobs[j, start:end])
                 all_ref_logprobs.append(ref_logprobs[j, start:end])
+                
+        rem = bs % fbs
+        if rem != 0:
+            query_batch = queries[-rem:]
+            response_batch = responses[-rem:]
+            input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])["input_ids"]
+            
+            with torch.no_grad():
+                input_ids = input_ids.to(self.device)
+                logits, ref_logits, v = self.forward(input_ids, outputVals=True, outputRef=True)
+
+                logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
+                ref_logprobs = logprobs_from_logits(ref_logits[:, :-1, :], input_ids[:, 1:])
+
+
+            for j in range(rem):
+                start = len(query_batch[j]) - 1
+                end = len(query_batch[j]) + len(response_batch[j]) - 1
+                all_values.append(v[j, start - 1:end - 1])
+                all_logprobs.append(logprobs[j, start:end])
+                all_ref_logprobs.append(ref_logprobs[j, start:end])
+                
         return all_logprobs, all_ref_logprobs, all_values
 
     def train_minibatch(self, logprobs, values, rewards, query, response, model_input, lengths, values_next=(0.0,)):
         """Train one PPO minibatch"""
         loss_total = None
-        logits, vpred = self.forward(model_input, outputVals=True)
+        input_ids = model_input["input_ids"]
+        query_ids = query["input_ids"]
+        response_ids = response["input_ids"]
+        logits, vpred = self.forward(input_ids, outputVals=True)
         for i in range(logits.shape[0]):
             # keep batch dim
-            loss_p, loss_v, train_stats = self.loss(logits[i:i+1], vpred[i:i+1], logprobs[i:i+1], values[i:i+1], rewards[i:i+1], query[i:i+1],
-                                                    response[i:i+1], model_input[i:i+1], lengths[i], values_next[i:i+1])
+            loss_p, loss_v, train_stats = self.loss(logits[i:i+1], vpred[i:i+1], logprobs[i:i+1], values[i:i+1], rewards[i:i+1], query_ids[i:i+1],
+                                                    response_ids[i:i+1], input_ids[i:i+1], lengths[i], values_next[i:i+1])
             loss = loss_p + loss_v
 
             if loss_total is None:
@@ -438,13 +462,19 @@ class PPOTrainer(pl.LightningModule):
             rewards.append(reward)
         return rewards, non_score_rewards
 
-    def loss(self, logits, vpred, old_logprobs, values, rewards, query, response, model_input, lengths, values_next=0.0):
+    def loss(self, logits, vpred, old_logprobs, values, rewards, query, response, input_ids, lengths, values_next=0.0):
         """Calculate policy and value losses."""
         lastgaelam = 0
         advantages_reversed = []
         # gen_len = response.shape[1]
+        querry_len = lengths[0]
         gen_len = lengths[1]
         total_len = lengths[2]
+        
+        # print(lengths)
+        values = values[:, :gen_len]
+        rewards = rewards[:, :gen_len]
+        old_logprobs = old_logprobs[:, :gen_len]
 
         for t in reversed(range(gen_len)):
             nextvalues = values[:, t + 1] if t < gen_len - 1 else values_next
@@ -460,10 +490,13 @@ class PPOTrainer(pl.LightningModule):
         # computed batched before this method called
         # logits, vpred = self.forward(model_input, outputVals=True)
         
-        logprob = logprobs_from_logits(logits[:, :-1, :], model_input[:, 1:])
+        logprob = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
 
         # only the generation part of the values/logprobs is needed
-        logprob, vpred = logprob[:, total_len-gen_len:total_len], vpred[:, total_len-gen_len - 1:total_len-1]
+        start = querry_len - 1
+        end = querry_len + gen_len - 1
+        logprob, vpred = logprob[:, start:end], vpred[:, start - 1:end-1]
+        # logprob, vpred = logprob[:, total_len-gen_len:total_len], vpred[:, total_len-gen_len - 1:total_len-1]
 
         vpredclipped = clip_by_value(vpred,
                                      values - self.ppo_params["cliprange_value"],
@@ -473,7 +506,10 @@ class PPOTrainer(pl.LightningModule):
         vf_losses2 = (vpredclipped - returns) ** 2
         vf_loss = .5 * torch.mean(torch.max(vf_losses1, vf_losses2))
         vf_clipfrac = torch.mean(torch.gt(vf_losses2, vf_losses1).double())
-
+        
+        # print(lengths)
+        # print(logprob.shape)
+        # print(old_logprobs.shape)
         ratio = torch.exp(logprob - old_logprobs)
 
         pg_losses = -advantages * ratio
@@ -528,8 +564,8 @@ def train(model_name, single_game=True):
     from agents import NLPAgent
     from time import time
 
-    UPDATE_FREQUENCY = 10
-    LOG_FREQUENCY = 10
+    UPDATE_FREQUENCY = 16
+    LOG_FREQUENCY = 16
 
     buffer = ReplayBuffer(UPDATE_FREQUENCY)
     agent = NLPAgent(buffer, humanTurns=0)
@@ -571,6 +607,6 @@ if __name__ == "__main__":
 
     model_name = 'gpt2-xl'
     # model_name = 'gptj'
-    single_game = True
+    single_game = False
 
     train(model_name, single_game)
