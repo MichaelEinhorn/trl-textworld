@@ -131,17 +131,18 @@ class PPOTrainer(pl.LightningModule):
             self.ref_model = GPT2LMHeadModel.from_pretrained(model_name)
             self.tokenizer = GPT2Tokenizer.from_pretrained(model_name)
             self.tokenizer.pad_token = self.tokenizer.unk_token
-        elif model_name == 'gptj':
+        elif 'gpt-j' in model_name:
             from transformers import GPT2Tokenizer, GPTJForCausalLM
-            if False:
-                self.model = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B", revision="float16",
-                                                        torch_dtype=torch.float16, low_cpu_mem_usage=True)
-                self.ref_model = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B", revision="float16",
-                                                            torch_dtype=torch.float16, low_cpu_mem_usage=True)
-            else:
-                self.model = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B")
-                self.ref_model = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B")
+            self.model = GPTJForCausalLM.from_pretrained(model_name)
+            self.ref_model = GPTJForCausalLM.from_pretrained(model_name)
             self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+            self.tokenizer.pad_token = self.tokenizer.unk_token
+        elif 'gpt-neo' in model_name:
+            from transformers import GPTNeoForCausalLM, GPT2Tokenizer
+            self.model = GPTNeoForCausalLM.from_pretrained(model_name)
+            self.ref_model = GPTNeoForCausalLM.from_pretrained(model_name)
+            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+            self.tokenizer.pad_token = self.tokenizer.unk_token
 
         print(self.model.config.torch_dtype)
         summary(self.model)
@@ -198,6 +199,9 @@ class PPOTrainer(pl.LightningModule):
         t = time.time()
         logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
         timing['time/ppo/forward_pass'] = time.time() - t
+        
+        # print("run game")
+        # print(values)
 
         t = time.time()
         rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
@@ -253,6 +257,9 @@ class PPOTrainer(pl.LightningModule):
     def training_step(self, batch, nb_batch):
         # rew, prompt[0], action[0], values, ret_cross, adv_cross
         scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
+        
+#         print("train step")
+#         print(values)
         
         fbs = scores.shape[0]
         """
@@ -402,9 +409,10 @@ class PPOTrainer(pl.LightningModule):
 
 
             for j in range(fbs):
+                # both logits and values are shifted 1 left from the input
                 start = len(query_batch[j]) - 1
                 end = len(query_batch[j]) + len(response_batch[j]) - 1
-                all_values.append(v[j, start - 1:end - 1])
+                all_values.append(v[j, start:end])
                 all_logprobs.append(logprobs[j, start:end])
                 all_ref_logprobs.append(ref_logprobs[j, start:end])
                 
@@ -423,9 +431,10 @@ class PPOTrainer(pl.LightningModule):
 
 
             for j in range(rem):
+                # both logits and values are shifted 1 left from the input
                 start = len(query_batch[j]) - 1
                 end = len(query_batch[j]) + len(response_batch[j]) - 1
-                all_values.append(v[j, start - 1:end - 1])
+                all_values.append(v[j, start:end])
                 all_logprobs.append(logprobs[j, start:end])
                 all_ref_logprobs.append(ref_logprobs[j, start:end])
                 
@@ -474,7 +483,6 @@ class PPOTrainer(pl.LightningModule):
         gen_len = lengths[1]
         total_len = lengths[2]
         
-        # print(lengths)
         values = values[:, :gen_len]
         rewards = rewards[:, :gen_len]
         old_logprobs = old_logprobs[:, :gen_len]
@@ -496,11 +504,12 @@ class PPOTrainer(pl.LightningModule):
         logprob = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
 
         # only the generation part of the values/logprobs is needed
+        # both logits and values are shifted 1 left from the input
         start = querry_len - 1
         end = querry_len + gen_len - 1
-        logprob, vpred = logprob[:, start:end], vpred[:, start - 1:end-1]
+        logprob, vpred = logprob[:, start:end], vpred[:, start:end]
         # logprob, vpred = logprob[:, total_len-gen_len:total_len], vpred[:, total_len-gen_len - 1:total_len-1]
-
+        
         vpredclipped = clip_by_value(vpred,
                                      values - self.ppo_params["cliprange_value"],
                                      values + self.ppo_params["cliprange_value"])
@@ -510,16 +519,13 @@ class PPOTrainer(pl.LightningModule):
         vf_loss = .5 * torch.mean(torch.max(vf_losses1, vf_losses2))
         vf_clipfrac = torch.mean(torch.gt(vf_losses2, vf_losses1).double())
         
-        # print(lengths)
-        # print(logprob.shape)
-        # print(old_logprobs.shape)
         ratio = torch.exp(logprob - old_logprobs)
 
         pg_losses = -advantages * ratio
         pg_losses2 = -advantages * torch.clamp(ratio,
                                                1.0 - self.ppo_params['cliprange'],
                                                1.0 + self.ppo_params['cliprange'])
-
+        
         pg_loss = torch.mean(torch.max(pg_losses, pg_losses2))
         pg_clipfrac = torch.mean(torch.gt(pg_losses2, pg_losses).double())
 
@@ -583,19 +589,28 @@ def train(model_name, single_game=True):
         agent.train()  # Tell the agent it should update its parameters.
         player = Player(agent, "./training_games/", verbose=False)  # Each game will be seen 5 times.
 
-    ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': 2}
+    ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': 8}
     ppo_trainer = PPOTrainer(model_name, player, buffer, agent, **ppo_config)
 
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
+    # trainer = pl.Trainer(
+    #     logger=False,
+    #     accelerator='gpu', devices=1,
+    #     max_epochs=500,
+    #     precision=16,
+    #     strategy=DeepSpeedStrategy(
+    #         stage=3,
+    #         offload_optimizer=True,
+    #         offload_parameters=False,
+    #         ),
+    #     )
     trainer = pl.Trainer(
         logger=False,
         accelerator='gpu', devices=1,
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(
-            stage=3,
-            offload_optimizer=True,
-            offload_parameters=False,
+            config="ds_config_zero2_light.json"
             ),
         )
 
@@ -608,8 +623,9 @@ if __name__ == "__main__":
     getEnvs()
     print("generated envs")
 
-    model_name = 'gpt2-xl'
-    # model_name = 'gptj'
+    # model_name = 'gpt2-xl'
+    # model_name = 'EleutherAI/gpt-j-6B'
+    model_name = 'EleutherAI/gpt-neo-1.3B'
     single_game = False
 
     train(model_name, single_game)

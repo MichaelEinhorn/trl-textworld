@@ -75,7 +75,7 @@ dependencies:
   - numpy-base=1.23.1=py38ha15fc14_0
   - openh264=2.3.0=h27087fc_0
   - openjpeg=2.5.0=h7d73246_1
-  - openssl=3.0.5=h166bdaf_1
+  - openssl=3.0.5=h166bdaf_2
   - p11-kit=0.24.1=hc5aa10d_0
   - packaging=21.3=pyhd8ed1ab_0
   - pillow=9.2.0=py38ha3b2c9c_2
@@ -104,7 +104,6 @@ dependencies:
   - torchinfo=1.7.0=pyhd8ed1ab_0
   - torchvision=0.13.1=py38_cu113
   - tqdm=4.64.1=pyhd8ed1ab_0
-  - transformers=4.18.0=py38h06a4308_0
   - typing-extensions=4.3.0=hd8ed1ab_0
   - typing_extensions=4.3.0=pyha770c72_0
   - urllib3=1.26.11=pyhd8ed1ab_0
@@ -126,6 +125,7 @@ dependencies:
   - zstd=1.5.2=h6239696_4
   - pip:
     - absl-py==1.2.0
+    - accelerate==0.12.0
     - aiohttp==3.8.1
     - aiosignal==1.2.0
     - async-timeout==4.0.2
@@ -183,6 +183,7 @@ dependencies:
     - textworld==1.5.2
     - thinc==8.1.0
     - torchmetrics==0.9.3
+    - transformers==4.21.3
     - typer==0.4.2
     - wasabi==0.10.1
     - wcwidth==0.2.5

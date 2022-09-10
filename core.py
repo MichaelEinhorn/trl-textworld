@@ -59,8 +59,12 @@ def logprobs_from_logits(logits, labels):
 
 def whiten(values, shift_mean=True):
     """Whiten values."""
+    # single element is equal to mean
+    if values.shape[1] == 1:
+        return torch.tensor(0, dtype=values.dtype)
     mean, var = torch.mean(values), torch.var(values)
-    whitened = (values - mean) * torch.rsqrt(var + 1e-8)
+    # 1e-8 is too small for fp16
+    whitened = (values - mean) * torch.rsqrt(var + 1e-6)
     if not shift_mean:
         whitened += mean
     return whitened
