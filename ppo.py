@@ -39,6 +39,7 @@ from core import (logprobs_from_logits,
                   add_suffix,
                   WANDB_PADDING)
 
+
 # using deepspeed pytorch-lightning
 
 
@@ -119,7 +120,7 @@ class PPOTrainer(pl.LightningModule):
 
         self.ppo_params = self.default_params
         self.ppo_params.update(ppo_params)
-        
+
         self.agent_buffer = buffer
         self.ppo_buffer = LineBuffer(self.ppo_params['batch_size'])
         self.player = player
@@ -146,16 +147,16 @@ class PPOTrainer(pl.LightningModule):
 
         print(self.model.config.torch_dtype)
         summary(self.model)
-        
+
         self.config = self.model.config
         # copied from gpt2.py, not sure what this does
         self.config.num_labels = 1
         self.valueHead = ValueHead(self.config)
-        
+
         # make value head same precision as model
         # if self.config.torch_dtype == torch.float16:
         #     self.valueHead = self.valueHead.half()
-        
+
         self.agent = agent
 
         # print(self.valueHead)
@@ -172,21 +173,20 @@ class PPOTrainer(pl.LightningModule):
     def getDevice(self):
         return self.device
 
-        
     # def on_train_start(self):
     #     self.runGame()
     def on_train_epoch_start(self):
         # train on the same data ppo epochs times before generating a new set
         if self.current_epoch % self.ppo_params['ppo_epochs'] == 0:
             self.runGame()
-    
-        
+
     def runGame(self):
         # self is passing the model to do forward passes with
         self.player.runGame(self, self.ppo_params['batch_size'])
         self.agent.fillBuffer()
-        scores, queries, responses, values_next, ret_cross, adv_cross = self.agent_buffer.sample(self.ppo_params['batch_size'])
-        
+        scores, queries, responses, values_next, ret_cross, adv_cross = self.agent_buffer.sample(
+            self.ppo_params['batch_size'])
+
         # first part of original step, gets old logprobs and ref logprobs
         bs = self.ppo_params['batch_size']
         assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"
@@ -199,14 +199,15 @@ class PPOTrainer(pl.LightningModule):
         t = time.time()
         logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
         timing['time/ppo/forward_pass'] = time.time() - t
-        
+
         # print("run game")
         # print(values)
 
         t = time.time()
         rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
         timing['time/ppo/compute_rewards'] = time.time() - t
-        for lineItem in zip(scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward):
+        for lineItem in zip(scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs,
+                            values, rewards, non_score_reward):
             self.ppo_buffer.append(lineItem)
 
     def configure_optimizers(self) -> List[Optimizer]:
@@ -214,7 +215,7 @@ class PPOTrainer(pl.LightningModule):
         # self.optimizer = Adam(model.parameters(), lr=self.ppo_params['lr'])
         optimizer = Adam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.ppo_params['lr'])
         return [optimizer]
-    
+
     def __dataloader(self) -> DataLoader:
         dataset = RLDataset(self.ppo_buffer, self.ppo_params['batch_size'])
         dataloader = DataLoader(dataset=dataset,
@@ -231,36 +232,37 @@ class PPOTrainer(pl.LightningModule):
         if past_key_values is None:
             lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache)
         else:
-            lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache, past_key_values=past_key_values)
+            lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache,
+                               past_key_values=past_key_values)
         # print(dir(lmOut))
         logits = lmOut.logits
-        
+
         output = [logits]
-        
+
         if use_cache:
             cache = lmOut.past_key_values
             output.append(cache)
-        
+
         if outputRef:
             with torch.no_grad():
                 ref_logits = self.ref_model(input_ids).logits
                 output.append(ref_logits)
-                
+
         if outputVals:
             hidden_state = lmOut.hidden_states[-1]
             v = self.valueHead(hidden_state)
             output.append(v)
         # ref_logits, _, _ = self.ref_model(input_ids)
-        
+
         return tuple(output)
 
     def training_step(self, batch, nb_batch):
         # rew, prompt[0], action[0], values, ret_cross, adv_cross
         scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
-        
-#         print("train step")
-#         print(values)
-        
+
+        #         print("train step")
+        #         print(values)
+
         fbs = scores.shape[0]
         """
         Run a PPO optimisation step.
@@ -275,18 +277,17 @@ class PPOTrainer(pl.LightningModule):
         """
 
         # print(queries[0].shape)
-        
 
         t = time.time()
         timing = dict()
         all_stats = []
         # moved to start train epoch, loops through dataset ppo_epochs times before generating a new set
-        #for _ in range(self.ppo_params['ppo_epochs']):
+        # for _ in range(self.ppo_params['ppo_epochs']):
         train_stats, loss = self.train_minibatch(logprobs, values,
-                                                rewards, queries,
-                                                responses,
-                                                model_input, lengths,
-                                                values_next=values_next)
+                                                 rewards, queries,
+                                                 responses,
+                                                 model_input, lengths,
+                                                 values_next=values_next, ref_logprobs=ref_logprobs)
         all_stats.append(train_stats)
         timing['time/ppo/optimize_step'] = time.time() - t
 
@@ -308,77 +309,77 @@ class PPOTrainer(pl.LightningModule):
 
         # timing['time/ppo/total'] = time.time() - t0
         stats.update(timing)
-        
+
         return loss
 
-#     def step(self, queries, responses, scores):
-#         """
-#         Run a PPO optimisation step.
+    #     def step(self, queries, responses, scores):
+    #         """
+    #         Run a PPO optimisation step.
 
-#         args:
-#             queries (List): List of tensors containing the encoded queries, shape [query_length]
-#             responses (List): List of tensors containing the encoded responses, shape [response_length]
-#             scores (List): tensor containing the scores, shape [batch_size]
+    #         args:
+    #             queries (List): List of tensors containing the encoded queries, shape [query_length]
+    #             responses (List): List of tensors containing the encoded responses, shape [response_length]
+    #             scores (List): tensor containing the scores, shape [batch_size]
 
-#         returns:
-#             train_stats (dict): a summary of the training statistics
-#         """
+    #         returns:
+    #             train_stats (dict): a summary of the training statistics
+    #         """
 
-#         # print(queries[0].shape)
-#         bs = self.ppo_params['batch_size']
-#         assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"
+    #         # print(queries[0].shape)
+    #         bs = self.ppo_params['batch_size']
+    #         assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"
 
-#         timing = dict()
-#         t0 = time.time()
+    #         timing = dict()
+    #         t0 = time.time()
 
-#         response_lengths = [len(r) for r in responses]
+    #         response_lengths = [len(r) for r in responses]
 
-#         t = time.time()
-#         logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
-#         timing['time/ppo/forward_pass'] = time.time() - t
+    #         t = time.time()
+    #         logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
+    #         timing['time/ppo/forward_pass'] = time.time() - t
 
-#         t = time.time()
-#         rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
-#         timing['time/ppo/compute_rewards'] = time.time() - t
+    #         t = time.time()
+    #         rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
+    #         timing['time/ppo/compute_rewards'] = time.time() - t
 
-#         t = time.time()
-#         all_stats = []
-#         total_loss = None
-#         idxs = list(range(bs))
-#         for _ in range(self.ppo_params['ppo_epochs']):
-#             random.shuffle(idxs)
-#             for i in range(bs):
-#                 idx = idxs[i]
-#                 train_stats, loss = self.train_minibatch(logprobs[idx].unsqueeze(0), values[idx].unsqueeze(0),
-#                                                    rewards[idx].unsqueeze(0), queries[idx].unsqueeze(0),
-#                                                    responses[idx].unsqueeze(0),
-#                                                    torch.cat([queries[idx], responses[idx]]).unsqueeze(0))
-#                 all_stats.append(train_stats)
-#                 if total_loss is None:
-#                     total_loss = loss
-#                 else:
-#                     total_loss += loss
-#         timing['time/ppo/optimize_step'] = time.time() - t
+    #         t = time.time()
+    #         all_stats = []
+    #         total_loss = None
+    #         idxs = list(range(bs))
+    #         for _ in range(self.ppo_params['ppo_epochs']):
+    #             random.shuffle(idxs)
+    #             for i in range(bs):
+    #                 idx = idxs[i]
+    #                 train_stats, loss = self.train_minibatch(logprobs[idx].unsqueeze(0), values[idx].unsqueeze(0),
+    #                                                    rewards[idx].unsqueeze(0), queries[idx].unsqueeze(0),
+    #                                                    responses[idx].unsqueeze(0),
+    #                                                    torch.cat([queries[idx], responses[idx]]).unsqueeze(0))
+    #                 all_stats.append(train_stats)
+    #                 if total_loss is None:
+    #                     total_loss = loss
+    #                 else:
+    #                     total_loss += loss
+    #         timing['time/ppo/optimize_step'] = time.time() - t
 
-#         t = time.time()
-#         train_stats = stack_dicts(all_stats)
+    #         t = time.time()
+    #         train_stats = stack_dicts(all_stats)
 
-#         # reshape advantages/ratios such that they are not averaged.
-#         train_stats['policy/advantages'] = torch.flatten(train_stats['policy/advantages']).unsqueeze(0)
-#         train_stats['policy/advantages'] = torch.nan_to_num(train_stats['policy/advantages'], WANDB_PADDING)
-#         train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
+    #         # reshape advantages/ratios such that they are not averaged.
+    #         train_stats['policy/advantages'] = torch.flatten(train_stats['policy/advantages']).unsqueeze(0)
+    #         train_stats['policy/advantages'] = torch.nan_to_num(train_stats['policy/advantages'], WANDB_PADDING)
+    #         train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
 
-#         stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
-#                                        non_score_reward=non_score_reward, train_stats=train_stats,
-#                                        kl_coef=self.kl_ctl.value)
-#         stats = stats_to_np(stats)
-#         timing['time/ppo/calc_stats'] = time.time() - t
+    #         stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
+    #                                        non_score_reward=non_score_reward, train_stats=train_stats,
+    #                                        kl_coef=self.kl_ctl.value)
+    #         stats = stats_to_np(stats)
+    #         timing['time/ppo/calc_stats'] = time.time() - t
 
-#         self.kl_ctl.update(stats['objective/kl'], self.ppo_params['batch_size'])
+    #         self.kl_ctl.update(stats['objective/kl'], self.ppo_params['batch_size'])
 
-#         timing['time/ppo/total'] = time.time() - t0
-#         stats.update(timing)
-#         return total_loss, stats
+    #         timing['time/ppo/total'] = time.time() - t0
+    #         stats.update(timing)
+    #         return total_loss, stats
 
     def batched_forward_pass(self, queries, responses):
         """Calculate model outputs in multiple batches."""
@@ -391,8 +392,9 @@ class PPOTrainer(pl.LightningModule):
         for i in range(int(bs / fbs)):
             query_batch = queries[i * fbs:(i + 1) * fbs]
             response_batch = responses[i * fbs:(i + 1) * fbs]
-            input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])["input_ids"]
-            
+            input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])[
+                "input_ids"]
+
             with torch.no_grad():
                 # # logits, _, v = self.model(input_ids)
                 # lmOut = self.model(input_ids, output_hidden_states=True)
@@ -407,7 +409,6 @@ class PPOTrainer(pl.LightningModule):
                 logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
                 ref_logprobs = logprobs_from_logits(ref_logits[:, :-1, :], input_ids[:, 1:])
 
-
             for j in range(fbs):
                 # both logits and values are shifted 1 left from the input
                 start = len(query_batch[j]) - 1
@@ -415,20 +416,20 @@ class PPOTrainer(pl.LightningModule):
                 all_values.append(v[j, start:end])
                 all_logprobs.append(logprobs[j, start:end])
                 all_ref_logprobs.append(ref_logprobs[j, start:end])
-                
+
         rem = bs % fbs
         if rem != 0:
             query_batch = queries[-rem:]
             response_batch = responses[-rem:]
-            input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])["input_ids"]
-            
+            input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])[
+                "input_ids"]
+
             with torch.no_grad():
                 input_ids = input_ids.to(self.device)
                 logits, ref_logits, v = self.forward(input_ids, outputVals=True, outputRef=True)
 
                 logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
                 ref_logprobs = logprobs_from_logits(ref_logits[:, :-1, :], input_ids[:, 1:])
-
 
             for j in range(rem):
                 # both logits and values are shifted 1 left from the input
@@ -437,10 +438,11 @@ class PPOTrainer(pl.LightningModule):
                 all_values.append(v[j, start:end])
                 all_logprobs.append(logprobs[j, start:end])
                 all_ref_logprobs.append(ref_logprobs[j, start:end])
-                
+
         return all_logprobs, all_ref_logprobs, all_values
 
-    def train_minibatch(self, logprobs, values, rewards, query, response, model_input, lengths, values_next=(0.0,)):
+    def train_minibatch(self, logprobs, values, rewards, query, response, model_input, lengths, values_next=(0.0,),
+                        ref_logprobs=None):
         """Train one PPO minibatch"""
         loss_total = None
         input_ids = model_input["input_ids"]
@@ -449,9 +451,12 @@ class PPOTrainer(pl.LightningModule):
         logits, vpred = self.forward(input_ids, outputVals=True)
         for i in range(logits.shape[0]):
             # keep batch dim
-            loss_p, loss_v, train_stats = self.loss(logits[i:i+1], vpred[i:i+1], logprobs[i:i+1], values[i:i+1], rewards[i:i+1], query_ids[i:i+1],
-                                                    response_ids[i:i+1], input_ids[i:i+1], lengths[i], values_next[i:i+1])
-            loss = loss_p + loss_v
+            loss_p, loss_v, kl_loss, train_stats = self.loss(logits[i:i + 1], vpred[i:i + 1], logprobs[i:i + 1],
+                                                             values[i:i + 1], rewards[i:i + 1], query_ids[i:i + 1],
+                                                             response_ids[i:i + 1], input_ids[i:i + 1], lengths[i],
+                                                             values_next=values_next[i:i + 1],
+                                                             ref_logprobs=ref_logprobs[i:i + 1])
+            loss = loss_p + loss_v + kl_loss
 
             if loss_total is None:
                 loss_total = loss
@@ -464,17 +469,20 @@ class PPOTrainer(pl.LightningModule):
 
     def compute_rewards(self, scores, logprobs, ref_logprobs):
         """Compute per token rewards from scores and KL-penalty."""
+        # dont put KL in reward
         rewards, non_score_rewards = [], []
         for score, logprob, ref_logprob in zip(scores, logprobs, ref_logprobs):
-            kl = logprob - ref_logprob
-            non_score_reward = -self.kl_ctl.value * kl
+            # kl = logprob - ref_logprob
+            # non_score_reward = -self.kl_ctl.value * kl
+            non_score_reward = torch.zeros_like(logprob)
             non_score_rewards.append(non_score_reward)
             reward = non_score_reward.clone()
             reward[-1] += score
             rewards.append(reward)
         return rewards, non_score_rewards
 
-    def loss(self, logits, vpred, old_logprobs, values, rewards, query, response, input_ids, lengths, values_next=0.0):
+    def loss(self, logits, vpred, old_logprobs, values, rewards, query, response, input_ids, lengths, values_next=0.0,
+             ref_logprobs=None):
         """Calculate policy and value losses."""
         lastgaelam = 0
         advantages_reversed = []
@@ -482,10 +490,11 @@ class PPOTrainer(pl.LightningModule):
         querry_len = lengths[0]
         gen_len = lengths[1]
         total_len = lengths[2]
-        
+
         values = values[:, :gen_len]
         rewards = rewards[:, :gen_len]
         old_logprobs = old_logprobs[:, :gen_len]
+        ref_logprobs = ref_logprobs[:, :gen_len]
 
         for t in reversed(range(gen_len)):
             nextvalues = values[:, t + 1] if t < gen_len - 1 else values_next
@@ -500,7 +509,7 @@ class PPOTrainer(pl.LightningModule):
 
         # computed batched before this method called
         # logits, vpred = self.forward(model_input, outputVals=True)
-        
+
         logprob = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
 
         # only the generation part of the values/logprobs is needed
@@ -509,7 +518,7 @@ class PPOTrainer(pl.LightningModule):
         end = querry_len + gen_len - 1
         logprob, vpred = logprob[:, start:end], vpred[:, start:end]
         # logprob, vpred = logprob[:, total_len-gen_len:total_len], vpred[:, total_len-gen_len - 1:total_len-1]
-        
+
         vpredclipped = clip_by_value(vpred,
                                      values - self.ppo_params["cliprange_value"],
                                      values + self.ppo_params["cliprange_value"])
@@ -518,18 +527,23 @@ class PPOTrainer(pl.LightningModule):
         vf_losses2 = (vpredclipped - returns) ** 2
         vf_loss = .5 * torch.mean(torch.max(vf_losses1, vf_losses2))
         vf_clipfrac = torch.mean(torch.gt(vf_losses2, vf_losses1).double())
-        
+
         ratio = torch.exp(logprob - old_logprobs)
 
         pg_losses = -advantages * ratio
         pg_losses2 = -advantages * torch.clamp(ratio,
                                                1.0 - self.ppo_params['cliprange'],
                                                1.0 + self.ppo_params['cliprange'])
-        
+
         pg_loss = torch.mean(torch.max(pg_losses, pg_losses2))
         pg_clipfrac = torch.mean(torch.gt(pg_losses2, pg_losses).double())
 
-        loss = pg_loss + self.ppo_params['vf_coef'] * vf_loss
+        # directly backprop through KL instead of a KL reward penalty
+        kl_loss = logprob - ref_logprobs
+        # sum across tokens
+        kl_loss = torch.sum(kl_loss)
+
+        loss = pg_loss + self.ppo_params['vf_coef'] * vf_loss + self.kl_ctl.value * kl_loss
 
         entropy = torch.mean(entropy_from_logits(logits))
         approxkl = .5 * torch.mean((logprob - old_logprobs) ** 2)
@@ -538,14 +552,14 @@ class PPOTrainer(pl.LightningModule):
         value_mean, value_var = torch.mean(values), torch.var(values)
 
         stats = dict(
-            loss=dict(policy=pg_loss, value=vf_loss, total=loss),
+            loss=dict(policy=pg_loss, value=vf_loss, kl=kl_loss, total=loss),
             policy=dict(entropy=entropy, approxkl=approxkl, policykl=policykl, clipfrac=pg_clipfrac,
                         advantages=advantages, advantages_mean=torch.mean(advantages), ratio=ratio),
             returns=dict(mean=return_mean, var=return_var),
             val=dict(vpred=torch.mean(vpred), error=torch.mean((vpred - returns) ** 2),
                      clipfrac=vf_clipfrac, mean=value_mean, var=value_var),
         )
-        return pg_loss, self.ppo_params['vf_coef'] * vf_loss, flatten_dict(stats)
+        return pg_loss, self.ppo_params['vf_coef'] * vf_loss, self.kl_ctl.value * kl_loss, flatten_dict(stats)
 
     def record_step_stats(self, kl_coef, **data):
         """Record training step statistics."""
@@ -568,6 +582,7 @@ class PPOTrainer(pl.LightningModule):
             stats[f'ppo/{k}'] = torch.mean(v, axis=0)
         stats['ppo/val/var_explained'] = 1 - stats['ppo/val/error'] / stats['ppo/returns/var']
         return stats
+
 
 def train(model_name, single_game=True):
     from agents import NLPAgent
@@ -611,8 +626,8 @@ def train(model_name, single_game=True):
         precision=16,
         strategy=DeepSpeedStrategy(
             config="ds_config_zero2_light.json"
-            ),
-        )
+        ),
+    )
 
     trainer.fit(ppo_trainer)
 

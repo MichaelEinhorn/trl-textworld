@@ -6,7 +6,6 @@ import textworld.gym
 
 import numpy as np
 
-
 def getEnvs(download=True):
     if download:
         os.system("wget https://aka.ms/textworld/notebooks/data.zip")

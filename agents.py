@@ -1,6 +1,5 @@
 import numpy as np
 
-import re
 from typing import List, Mapping, Any, Optional
 from collections import defaultdict
 from datastructures import RollingBuffer
@@ -16,6 +15,11 @@ import torch.nn.functional as F
 
 from transformers import top_k_top_p_filtering
 from torch.nn import Identity
+
+def clean_str(str):
+    str = str.printable
+    str = str.replace("\\", "")
+    return str
 
 class RandomAgent(textworld.gym.Agent):
     """ Agent that randomly selects a command from the admissible ones. """
@@ -256,4 +260,6 @@ class NLPAgent:
                     self.transitions[-1][3] = values.to(torch.device("cpu"))
                 self.transitions.append([reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), torch.tensor(0, dtype=values.dtype), False])
 
+        # removes non ascii chars and \
+        action = clean_str(action)
         return action
