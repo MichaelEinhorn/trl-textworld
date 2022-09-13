@@ -489,11 +489,13 @@ class VectorNLPAgent:
                 print("action")
                 print(action)
 
-            # only grab last token
-            value = values[i, genLengths[i]-1, 0]
+            # only grab first token
+            value = values[i, -(genLengths[i]+1), 0]
             if i == 0:
-                print("last token value in action")
-                print(value)
+                print("values in action")
+                print(value[-(genLengths[i]+1):])
+            # only grab last token
+            # value = values[i, genLengths[i] - 1, 0]
 
             self.memory[i].append(input_ + action)
 

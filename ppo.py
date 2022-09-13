@@ -412,8 +412,9 @@ class PPOTrainer(pl.LightningModule):
         for i in range(int(bs / fbs)):
             query_batch = queries[i * fbs:(i + 1) * fbs]
             response_batch = responses[i * fbs:(i + 1) * fbs]
-            input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])[
-                "input_ids"]
+            model_input = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])
+            input_ids = model_input["input_ids"]
+            attention_mask = model_input["attention_mask"]
 
             with torch.no_grad():
                 # # logits, _, v = self.model(input_ids)
@@ -424,18 +425,24 @@ class PPOTrainer(pl.LightningModule):
                 # # ref_logits, _, _ = self.ref_model(input_ids)
                 # ref_logits = self.ref_model(input_ids).logits
                 input_ids = input_ids.to(self.device)
-                logits, ref_logits, v = self.forward(input_ids, outputVals=True, outputRef=True)
+                logits, ref_logits, v = self.forward(input_ids, outputVals=True, outputRef=True, attention_mask=attention_mask)
 
                 logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
                 ref_logprobs = logprobs_from_logits(ref_logits[:, :-1, :], input_ids[:, 1:])
 
             for j in range(fbs):
                 # both logits and values are shifted 1 left from the input
-                start = len(query_batch[j]) - 1
-                end = len(query_batch[j]) + len(response_batch[j]) - 1
-                all_values.append(v[j, start:end])
-                all_logprobs.append(logprobs[j, start:end])
-                all_ref_logprobs.append(ref_logprobs[j, start:end])
+                # right pad
+                # start = len(query_batch[j]) - 1
+                # end = len(query_batch[j]) + len(response_batch[j]) - 1
+                # all_values.append(v[j, start:end])
+                # all_logprobs.append(logprobs[j, start:end])
+                # all_ref_logprobs.append(ref_logprobs[j, start:end])
+                # left pad
+                gen_len = len(response_batch[j])
+                all_values.append(v[j, -(gen_len+1):-1])
+                all_logprobs.append(logprobs[j, -(gen_len+1):-1])
+                all_ref_logprobs.append(ref_logprobs[j, -(gen_len+1):-1])
 
         rem = bs % fbs
         if rem != 0:
@@ -453,11 +460,17 @@ class PPOTrainer(pl.LightningModule):
 
             for j in range(rem):
                 # both logits and values are shifted 1 left from the input
-                start = len(query_batch[j]) - 1
-                end = len(query_batch[j]) + len(response_batch[j]) - 1
-                all_values.append(v[j, start:end])
-                all_logprobs.append(logprobs[j, start:end])
-                all_ref_logprobs.append(ref_logprobs[j, start:end])
+                # right pad
+                # start = len(query_batch[j]) - 1
+                # end = len(query_batch[j]) + len(response_batch[j]) - 1
+                # all_values.append(v[j, start:end])
+                # all_logprobs.append(logprobs[j, start:end])
+                # all_ref_logprobs.append(ref_logprobs[j, start:end])
+                # left pad
+                gen_len = len(response_batch[j])
+                all_values.append(v[j, -(gen_len + 1):-1])
+                all_logprobs.append(logprobs[j, -(gen_len + 1):-1])
+                all_ref_logprobs.append(ref_logprobs[j, -(gen_len + 1):-1])
 
         return all_logprobs, all_ref_logprobs, all_values
 
@@ -466,9 +479,13 @@ class PPOTrainer(pl.LightningModule):
         """Train one PPO minibatch"""
         loss_total = None
         input_ids = model_input["input_ids"]
+        input_mask = model_input["attention_mask"]
         query_ids = query["input_ids"]
+        query_mask = query["attention_mask"]
         response_ids = response["input_ids"]
-        logits, vpred = self.forward(input_ids, outputVals=True)
+        response_mask = response["attention_mask"]
+
+        logits, vpred = self.forward(input_ids, outputVals=True, attention_mask=input_mask)
         for i in range(logits.shape[0]):
             # keep batch dim
             loss_p, loss_v, kl_loss, train_stats = self.loss(logits[i:i + 1], vpred[i:i + 1], logprobs[i:i + 1],
@@ -534,9 +551,12 @@ class PPOTrainer(pl.LightningModule):
 
         # only the generation part of the values/logprobs is needed
         # both logits and values are shifted 1 left from the input
-        start = querry_len - 1
-        end = querry_len + gen_len - 1
-        logprob, vpred = logprob[:, start:end], vpred[:, start:end]
+        # start = querry_len - 1
+        # end = querry_len + gen_len - 1
+        # right pad
+        # logprob, vpred = logprob[:, start:end], vpred[:, start:end]
+        # left pad
+        logprob, vpred = logprob[:, -(gen_len+1):-1], vpred[:, -(gen_len+1):-1]
         # logprob, vpred = logprob[:, total_len-gen_len:total_len], vpred[:, total_len-gen_len - 1:total_len-1]
 
         vpredclipped = clip_by_value(vpred,
