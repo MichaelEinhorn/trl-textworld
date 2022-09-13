@@ -53,6 +53,7 @@ class AdaptiveKLController:
         self.value = init_kl_coef
         self.target = target
         self.horizon = horizon
+        self.kl_list = []
 
     def update(self, current, n_steps):
         target = self.target
@@ -66,6 +67,7 @@ class FixedKLController:
 
     def __init__(self, kl_coef):
         self.value = kl_coef
+        self.kl_list = []
 
     def update(self, current, n_steps):
         pass
@@ -78,10 +80,17 @@ class PPOTrainer(pl.LightningModule):
 
     default_params = {
         "lr": 1.41e-5,
+        # KL Calcuated per forward batch importance corrected exact gradients
         "adap_kl_ctrl": False,
         "init_kl_coef": 0,
         "target": 6,
         "horizon": 10000,
+        # KL added to rewards at start of PPO Epochs
+        "adap_kl_ctrl_rew": False,
+        "init_kl_coef_rew": 0,
+        "target_rew": 6,
+        "horizon_rew": 10000,
+        # end KL
         "gamma": 1,
         "lam": 0.95,
         "cliprange": .2,
@@ -130,19 +139,19 @@ class PPOTrainer(pl.LightningModule):
             from transformers import GPT2Tokenizer, GPT2Model, GPT2LMHeadModel
             self.model = GPT2LMHeadModel.from_pretrained(model_name)
             self.ref_model = GPT2LMHeadModel.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
             self.tokenizer.pad_token = self.tokenizer.unk_token
         elif 'gpt-j' in model_name:
             from transformers import GPT2Tokenizer, GPTJForCausalLM
             self.model = GPTJForCausalLM.from_pretrained(model_name)
             self.ref_model = GPTJForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+            self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2', padding_side='left')
             self.tokenizer.pad_token = self.tokenizer.unk_token
         elif 'gpt-neo' in model_name:
             from transformers import GPTNeoForCausalLM, GPT2Tokenizer
             self.model = GPTNeoForCausalLM.from_pretrained(model_name)
             self.ref_model = GPTNeoForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
             self.tokenizer.pad_token = self.tokenizer.unk_token
 
         print(self.model.config.torch_dtype)
@@ -169,6 +178,13 @@ class PPOTrainer(pl.LightningModule):
                                                self.ppo_params['horizon'])
         else:
             self.kl_ctl = FixedKLController(self.ppo_params['init_kl_coef'])
+
+        if self.ppo_params['adap_kl_ctrl_rew']:
+            self.kl_ctl_rew = AdaptiveKLController(self.ppo_params['init_kl_coef_rew'],
+                                               self.ppo_params['target_rew'],
+                                               self.ppo_params['horizon_rew'])
+        else:
+            self.kl_ctl_rew = FixedKLController(self.ppo_params['init_kl_coef_rew'])
 
     def getDevice(self):
         return self.device
@@ -228,12 +244,12 @@ class PPOTrainer(pl.LightningModule):
         """Get train loader"""
         return self.__dataloader()
 
-    def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False):
+    def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False, attention_mask=None):
         if past_key_values is None:
-            lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache)
+            lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache, attention_mask=attention_mask)
         else:
             lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache,
-                               past_key_values=past_key_values)
+                               past_key_values=past_key_values, attention_mask=attention_mask)
         # print(dir(lmOut))
         logits = lmOut.logits
 
@@ -294,6 +310,8 @@ class PPOTrainer(pl.LightningModule):
         t = time.time()
         train_stats = stack_dicts(all_stats)
 
+        train_stats['epoch/batch'] = (self.epoch, nb_batch)
+
         # reshape advantages/ratios such that they are not averaged.
         train_stats['policy/advantages'] = torch.flatten(train_stats['policy/advantages']).unsqueeze(0)
         train_stats['policy/advantages'] = torch.nan_to_num(train_stats['policy/advantages'], WANDB_PADDING)
@@ -306,9 +324,11 @@ class PPOTrainer(pl.LightningModule):
         timing['time/ppo/calc_stats'] = time.time() - t
 
         self.kl_ctl.update(stats['objective/kl'], fbs)
+        self.kl_ctl_rew.update(stats['objective/kl_rew'], fbs)
 
         # timing['time/ppo/total'] = time.time() - t0
         stats.update(timing)
+        print(stats)
 
         return loss
 
@@ -469,12 +489,12 @@ class PPOTrainer(pl.LightningModule):
 
     def compute_rewards(self, scores, logprobs, ref_logprobs):
         """Compute per token rewards from scores and KL-penalty."""
-        # dont put KL in reward
         rewards, non_score_rewards = [], []
         for score, logprob, ref_logprob in zip(scores, logprobs, ref_logprobs):
-            # kl = logprob - ref_logprob
-            # non_score_reward = -self.kl_ctl.value * kl
-            non_score_reward = torch.zeros_like(logprob)
+            kl = logprob - ref_logprob
+            # for stats and adaptive update
+            self.kl_ctl_rew.kl_list.append(kl)
+            non_score_reward = -self.kl_ctl_rew.value * kl
             non_score_rewards.append(non_score_reward)
             reward = non_score_reward.clone()
             reward[-1] += score
@@ -539,9 +559,14 @@ class PPOTrainer(pl.LightningModule):
         pg_clipfrac = torch.mean(torch.gt(pg_losses2, pg_losses).double())
 
         # directly backprop through KL instead of a KL reward penalty
-        kl_loss = logprob - ref_logprobs
-        # sum across tokens
-        kl_loss = torch.sum(kl_loss)
+        kl = logprob - ref_logprobs
+        # importence sampling correction KL (P || R) sampled from Q
+        # backprop through ratio and kl
+        kl = kl * ratio
+        # for stats and adaptive update
+        self.kl_ctl.kl_list.append(kl)
+        # mean across tokens
+        kl_loss = torch.mean(kl)
 
         loss = pg_loss + self.ppo_params['vf_coef'] * vf_loss + self.kl_ctl.value * kl_loss
 
@@ -561,19 +586,27 @@ class PPOTrainer(pl.LightningModule):
         )
         return pg_loss, self.ppo_params['vf_coef'] * vf_loss, self.kl_ctl.value * kl_loss, flatten_dict(stats)
 
-    def record_step_stats(self, kl_coef, **data):
+    def record_step_stats(self, **data):
         """Record training step statistics."""
-        kl_list = [logprobs - ref_logprobs for logprobs, ref_logprobs in zip(data['logprobs'], data['ref_logprobs'])]
+        # kl_list = [logprobs - ref_logprobs for logprobs, ref_logprobs in zip(data['logprobs'], data['ref_logprobs'])]
+        kl_list = self.kl_ctl.kl_list
         mean_kl = torch.mean(torch.stack([torch.sum(kl) for kl in kl_list]))
+        kl_list_rew = self.kl_ctl.kl_list_rew
+        mean_kl_rew = torch.mean(torch.stack([torch.sum(kl) for kl in kl_list_rew]))
+
         mean_entropy = torch.mean(torch.stack([torch.sum(-log_probs) for log_probs in data['logprobs']]))
         mean_non_score_reward = torch.mean(
             torch.stack([torch.sum(non_score_reward) for non_score_reward in data['non_score_reward']]))
         stats = {
             'objective/kl': mean_kl,
             'objective/kl_dist': kl_list,
-            'objective/logprobs': data['logprobs'],
-            'objective/ref_logprobs': data['ref_logprobs'],
-            'objective/kl_coef': kl_coef,
+            'objective/kl_rew': mean_kl_rew,
+            'objective/kl_dist_rew': kl_list_rew,
+            # too big, makes file messy
+            # 'objective/logprobs': data['logprobs'],
+            # 'objective/ref_logprobs': data['ref_logprobs'],
+            'objective/kl_coef': self.kl_ctl.value,
+            'objective/kl_coef_rew': self.kl_ctl_rew.value,
             'objective/entropy': mean_entropy,
             'ppo/mean_non_score_reward': mean_non_score_reward,
         }

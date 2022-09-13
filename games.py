@@ -83,7 +83,6 @@ class Player:
 
             if self.done:
                 self.no_episode += 1
-                self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel)  # Let the agent know the game is done.
 
                 if self.verbose:
                     print(".", end="")
