@@ -142,6 +142,9 @@ class RLDatasetCollator():
         scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
         # print(values)
         values = tuple([torch.squeeze(v, 1) for v in values])
+        # print(lengths)
+        # print(len(logprobs), logprobs[0].shape)
+        # print(len(ref_logprobs), ref_logprobs[0].shape)
         return (torch.tensor(scores),
                 self.text_collator(queries),
                 self.text_collator(responses),

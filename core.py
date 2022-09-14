@@ -23,6 +23,8 @@ def flatten_dict(nested, sep='/'):
     rec(nested, '', flat)
     return flat
 
+def pad_mask(input_ids, pad_token):
+    return torch.where(torch.eq(input_ids, pad_token), 0, 1)
 
 def stack_dicts(stats_dicts):
     """Stack the values of a dict."""

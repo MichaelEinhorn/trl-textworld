@@ -138,17 +138,16 @@ class VectorPlayer:
     def resetEnv(self):
         self.obs, self.infos = self.env.reset()  # Start new episode.
 
-        self.score = 0
-        self.done = False
+        self.score = [0 for i in range(self.num_agents)]
+        self.done = [False for i in range(self.num_agents)]
         self.nb_moves = 0
 
     def runGame(self, lightmodel, steps=10):
+        steps = steps // self.num_agents
         print("running game for " + str(steps))
+        self.resetEnv()
+        
         for i in range(steps):
-            # if self.done:
-            #     self.resetEnv()
-            #     print("reset env")
-
             command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel)
             self.obs, self.score, self.done, self.infos = self.env.step(command)
             if hasattr(self.agent, 'reportScore'):

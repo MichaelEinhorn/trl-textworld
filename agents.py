@@ -18,10 +18,15 @@ from torch.nn import Identity
 
 from core import logprobs_from_logits
 
-def clean_str(str):
-    str = str.printable
-    str = str.replace("\\", "")
-    return str
+import string
+import re
+
+def clean_str(s):
+    printable = string.printable
+    printable = printable.replace("\\", "")
+    printable = printable.replace("^", "")
+    s = re.sub(rf'[^{printable}]', '', s)
+    return s
 
 class RandomAgent(textworld.gym.Agent):
     """ Agent that randomly selects a command from the admissible ones. """
@@ -112,7 +117,7 @@ class NLPAgent:
             R = last_values.data
         for t in reversed(range(len(self.transitions))):
             # dont discount between episodes
-            rewards, _, _, values, done = self.transitions[t]
+            rewards, _, _, values, done, _, _ = self.transitions[t]
             if done:
                 R = 0
             R = rewards + self.GAMMA * R
@@ -205,7 +210,9 @@ class NLPAgent:
         next_token = None
 
         cache = None
-
+        
+        logprobList = []
+        valuesList = []
         while new_tokens == 0 or (new_tokens < 20 and "\n" not in lightmodel.tokenizer.decode(next_token)
                                   and next_token != lightmodel.tokenizer.eos_token):
             # run model
@@ -221,31 +228,44 @@ class NLPAgent:
 
                 logits, cache, values = lmout.logits, lmout.cache, lmout.values
                 
+                
+                
+                
                 next_token_logits = logits[:, -1, :]
                 next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=0, top_p=1)
                 probs = F.softmax(next_token_logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
                 input_ids = torch.cat([input_ids, next_token.unsqueeze(-1)], dim=-1)
+                
+                logprob = logprobs_from_logits(logits[:, -1:, :], next_token.unsqueeze(-1))
+                logprobList.append(logprob)
+                valuesList.append(values[:, -1, :])
 
                 new_tokens += 1
+                
+        # print(logprobList)
+        # print(valuesList)
+        logprob = torch.stack(logprobList, dim=1)
+        logprob = logprob.squeeze(2)
+        print("logprob ", logprob.shape)
+        values = torch.stack(valuesList, dim=1)
 
         # doesn't need shifting since input ids is already 1 longer than logits
-        logprob = logprobs_from_logits(logits[:, -new_tokens:, :], input_ids[:, -new_tokens:])
+        
 
         action_tens = input_ids[:, -new_tokens:]
         prompt_tens = input_ids[:, :-new_tokens]
 
         action = lightmodel.tokenizer.decode(action_tens[0, :])
 
-        print("action")
+        # print("action")
         print(action)
 
         # only grab last token
         # doesn't need shifting since input ids is already 1 longer than values
         value = values[:, -new_tokens:]
         first_value = value[0, 0, 0]
-        print("values in action")
-        print(value)
+        print("first value in action", first_value)
 
         self.memory.append(input_ + action)
 
@@ -259,7 +279,7 @@ class NLPAgent:
                 reward = torch.tensor(count, dtype=values.dtype)
                 print("reward")
                 print(reward)
-                self.rewValStat.append([lightmodel.epoch, reward, values.detach().cpu().numpy()])
+                self.rewValStat.append([lightmodel.current_epoch, reward, first_value.detach().cpu().numpy()])
 
             if not self.returnNextValues:
                 self.transitions.append(
@@ -268,13 +288,14 @@ class NLPAgent:
             else:
                 #                                       # not done on last step
                 if len(self.transitions) != 0 and not self.transitions[-1][4]:
-                    self.transitions[-1][3] = value.to(torch.device("cpu"))
+                    self.transitions[-1][3] = first_value.to(torch.device("cpu"))
                 self.transitions.append(
                     [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
                      torch.tensor(0, dtype=value.dtype), False, value.to("cpu"), logprob.to("cpu")])
 
         # removes non ascii chars and \
         action = clean_str(action)
+        # print(action)
         return action
 
 
@@ -334,7 +355,7 @@ class VectorNLPAgent:
             returns, advantages = [], []
             for t in reversed(range(len(trans))):
                 # dont discount between episodes
-                rewards, _, _, values, done = trans[t]
+                rewards, _, _, values, done, _, _ = trans[t]
                 if done:
                     R = 0
                 R = rewards + self.GAMMA * R
@@ -443,6 +464,8 @@ class VectorNLPAgent:
         maxLen = 20
         genLengths = [maxLen for i in range(self.num_agents)]
 
+        logprobList = []
+        valuesList = []
         while new_tokens == 0 or (new_tokens < maxLen and torch.sum(finished) > 0):
             # run model
             with torch.no_grad():
@@ -469,11 +492,20 @@ class VectorNLPAgent:
                         genLengths[i] = new_tokens + 1
 
                 attention_mask = torch.cat([attention_mask, finished.unsqueeze(-1)])
+                
+                logprob = logprobs_from_logits(logits[:, -1:, :], next_token.unsqueeze(-1))
+                logprobList.append(logprob)
+                valuesList.append(values[:, -1, :])
 
                 new_tokens += 1
+                
+        print(logprobList)
+        print(valuesList)
+        logprob = torch.stack(logprobList, dim=1)
+        values = torch.stack(valuesList, dim=1)
 
         # doesn't need shifting since input ids is already 1 longer than logits
-        logprobs = logprobs_from_logits(logits[:, -new_tokens:, :], input_ids[:, -new_tokens:])
+        # logprobs = logprobs_from_logits(logits[:, -new_tokens:, :], input_ids[:, -new_tokens:])
 
         actionList = []
         for i in range(self.num_agents):
@@ -502,13 +534,13 @@ class VectorNLPAgent:
                 self.memory[i].append(input_ + action)
                 self.exTurnsRemaining -= 1
                 if i == 0:
-                    print("action")
+                    # print("action")
                     print(action)
                 actionList.append(action)
                 continue
 
             if i == 0:
-                print("action")
+                # print("action")
                 print(action)
 
             # doesn't need shifting since input ids is already 1 longer than values
@@ -516,8 +548,8 @@ class VectorNLPAgent:
             value = value[:, :genLengths[i]]
             first_value = value[0, 0, 0]
             if i == 0:
-                print("values in action")
-                print(value)
+                print("first value in action", first_value)
+                # print(value)
             # only grab last token
             # value = values[i, genLengths[i] - 1, 0]
 
@@ -534,7 +566,7 @@ class VectorNLPAgent:
                     reward = torch.tensor(count, dtype=first_value.dtype)
                     print("reward")
                     print(reward)
-                    self.rewValStat.append([lightmodel.epoch, reward, first_value.detach().cpu().numpy()])
+                    self.rewValStat.append([lightmodel.current_epoch, reward, first_value.detach().cpu().numpy()])
 
                 if not self.returnNextValues:
                     self.transitions[i].append(
@@ -543,7 +575,7 @@ class VectorNLPAgent:
                 else:
                     #                                       # not done on last step
                     if len(self.transitions[i]) != 0 and not self.transitions[i][-1][4]:
-                        self.transitions[i][-1][3] = value.to(torch.device("cpu"))
+                        self.transitions[i][-1][3] = first_value.to(torch.device("cpu"))
                     self.transitions.append(
                         [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
                          torch.tensor(0, dtype=value.dtype), False, value.to("cpu"), logprob.to("cpu")])
