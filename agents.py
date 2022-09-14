@@ -16,6 +16,8 @@ import torch.nn.functional as F
 from transformers import top_k_top_p_filtering
 from torch.nn import Identity
 
+from core import logprobs_from_logits
+
 def clean_str(str):
     str = str.printable
     str = str.replace("\\", "")
@@ -126,13 +128,13 @@ class NLPAgent:
         returns, advantages = self._discount_rewards()
 
         for t in reversed(range(len(self.transitions))):
-            rew, prompt, action, values, done = self.transitions[t]
+            rew, prompt, action, next_value, done, value, logprob = self.transitions[t]
             ret_cross = returns[t]
             adv_cross = advantages[t]
             # returns and advantages across multiple actions
             # ppo trainer computes returns and advantages across tokens within an action
             # not sure if these are usefull
-            exper = (rew, prompt[0], action[0], values, ret_cross, adv_cross)
+            exper = (rew, prompt[0], action[0], next_value, ret_cross, adv_cross, value[0], logprob[0])
             self.transitionBuffer.append(exper)
 
         self.transitions = []
@@ -212,9 +214,12 @@ class NLPAgent:
                 input_ids = input_ids.to(lightmodel.getDevice())
                 # input_ids = input_ids.to(lightmodel.model.device)
                 if cache is None:
-                    logits, cache, values = lightmodel(input_ids, use_cache=True, outputVals=True)
+                    lmout = lightmodel(input_ids, use_cache=True, outputVals=True)
                 else:
-                    logits, cache, values = lightmodel(input_ids[:, -1:], outputVals=True, use_cache=True, past_key_values=cache)
+                    lmout = lightmodel(input_ids[:, -1:], outputVals=True, use_cache=True,
+                                                       past_key_values=cache)
+
+                logits, cache, values = lmout.logits, lmout.cache, lmout.values
                 
                 next_token_logits = logits[:, -1, :]
                 next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=0, top_p=1)
@@ -223,6 +228,9 @@ class NLPAgent:
                 input_ids = torch.cat([input_ids, next_token.unsqueeze(-1)], dim=-1)
 
                 new_tokens += 1
+
+        # doesn't need shifting since input ids is already 1 longer than logits
+        logprob = logprobs_from_logits(logits[:, -new_tokens:, :], input_ids[:, -new_tokens:])
 
         action_tens = input_ids[:, -new_tokens:]
         prompt_tens = input_ids[:, :-new_tokens]
@@ -233,9 +241,11 @@ class NLPAgent:
         print(action)
 
         # only grab last token
-        values = values[0, -1, 0]
-        print("last token value in action")
-        print(values)
+        # doesn't need shifting since input ids is already 1 longer than values
+        value = values[:, -new_tokens:]
+        first_value = value[0, 0, 0]
+        print("values in action")
+        print(value)
 
         self.memory.append(input_ + action)
 
@@ -250,13 +260,18 @@ class NLPAgent:
                 print("reward")
                 print(reward)
                 self.rewValStat.append([lightmodel.epoch, reward, values.detach().cpu().numpy()])
-            
+
             if not self.returnNextValues:
-                self.transitions.append([reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), values.to(torch.device("cpu")), False])  # Reward will be set on the next call
+                self.transitions.append(
+                    [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
+                     first_value.to(torch.device("cpu")), False, value.to("cpu"), logprob.to("cpu")])
             else:
-                if len(self.transitions) != 0 and self.transitions[-1] != "end episode":
-                    self.transitions[-1][3] = values.to(torch.device("cpu"))
-                self.transitions.append([reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")), torch.tensor(0, dtype=values.dtype), False])
+                #                                       # not done on last step
+                if len(self.transitions) != 0 and not self.transitions[-1][4]:
+                    self.transitions[-1][3] = value.to(torch.device("cpu"))
+                self.transitions.append(
+                    [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
+                     torch.tensor(0, dtype=value.dtype), False, value.to("cpu"), logprob.to("cpu")])
 
         # removes non ascii chars and \
         action = clean_str(action)
@@ -337,13 +352,13 @@ class VectorNLPAgent:
         returnsList, advantagesList = self._discount_rewards()
         for trans, returns, advantages in zip(self.transitions, returnsList, advantagesList):
             for t in reversed(range(len(trans))):
-                rew, prompt, action, values, done = trans[t]
+                rew, prompt, action, next_value, done, value, logprob = trans[t]
                 ret_cross = returns[t]
                 adv_cross = advantages[t]
                 # returns and advantages across multiple actions
                 # ppo trainer computes returns and advantages across tokens within an action
                 # not sure if these are usefull
-                exper = (rew, prompt[0], action[0], values, ret_cross, adv_cross)
+                exper = (rew, prompt[0], action[0], next_value, ret_cross, adv_cross, value[0], logprob[0])
                 self.transitionBuffer.append(exper)
 
         self.transitions = [[] for i in range(self.num_agents)]
@@ -435,10 +450,12 @@ class VectorNLPAgent:
                 input_ids = input_ids.to(lightmodel.getDevice())
                 # input_ids = input_ids.to(lightmodel.model.device)
                 if cache is None:
-                    logits, cache, values = lightmodel(input_ids, use_cache=True, outputVals=True, attention_mask=attention_mask)
+                    lmout = lightmodel(input_ids, use_cache=True, outputVals=True, attention_mask=attention_mask)
                 else:
-                    logits, cache, values = lightmodel(input_ids[:, -1:], outputVals=True, use_cache=True,
+                    lmout = lightmodel(input_ids[:, -1:], outputVals=True, use_cache=True,
                                                        past_key_values=cache, attention_mask=attention_mask)
+
+                logits, cache, values = lmout.logits, lmout.cache, lmout.values
 
                 next_token_logits = logits[:, -1, :]
                 next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=0, top_p=1)
@@ -454,6 +471,9 @@ class VectorNLPAgent:
                 attention_mask = torch.cat([attention_mask, finished.unsqueeze(-1)])
 
                 new_tokens += 1
+
+        # doesn't need shifting since input ids is already 1 longer than logits
+        logprobs = logprobs_from_logits(logits[:, -new_tokens:, :], input_ids[:, -new_tokens:])
 
         actionList = []
         for i in range(self.num_agents):
@@ -473,6 +493,8 @@ class VectorNLPAgent:
             action = lightmodel.tokenizer.decode(action_tens[0, :])
             input_ = inputList[i]
 
+            logprob = logprobs[i:i+1, genLengths[i]:]
+
             if self.exTurnsRemaining[0] > 0:
                 commands = infos[i]["admissible_commands"]
                 idx = np.random.choice(len(commands))
@@ -489,11 +511,13 @@ class VectorNLPAgent:
                 print("action")
                 print(action)
 
-            # only grab first token
-            value = values[i, -(genLengths[i]+1), 0]
+            # doesn't need shifting since input ids is already 1 longer than values
+            value = values[i:i+1, -new_tokens:]
+            value = value[:, :genLengths[i]]
+            first_value = value[0, 0, 0]
             if i == 0:
                 print("values in action")
-                print(value[-(genLengths[i]+1):])
+                print(value)
             # only grab last token
             # value = values[i, genLengths[i] - 1, 0]
 
@@ -507,22 +531,22 @@ class VectorNLPAgent:
                     for letter in self.testCountLetters:
                         count += action.count(letter)
                     # count /= len(action)
-                    reward = torch.tensor(count, dtype=value.dtype)
+                    reward = torch.tensor(count, dtype=first_value.dtype)
                     print("reward")
                     print(reward)
-                    self.rewValStat.append([lightmodel.epoch, reward, value.detach().cpu().numpy()])
+                    self.rewValStat.append([lightmodel.epoch, reward, first_value.detach().cpu().numpy()])
 
                 if not self.returnNextValues:
                     self.transitions[i].append(
                         [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
-                         value.to(torch.device("cpu")), False])
+                         first_value.to(torch.device("cpu")), False, value.to("cpu"), logprob.to("cpu")])
                 else:
                     #                                       # not done on last step
                     if len(self.transitions[i]) != 0 and not self.transitions[i][-1][4]:
                         self.transitions[i][-1][3] = value.to(torch.device("cpu"))
                     self.transitions.append(
                         [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
-                         torch.tensor(0, dtype=value.dtype), False])
+                         torch.tensor(0, dtype=value.dtype), False, value.to("cpu"), logprob.to("cpu")])
 
             # removes non ascii chars and \
             action = clean_str(action)

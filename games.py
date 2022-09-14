@@ -99,3 +99,76 @@ class Player:
             else:
                 msg = "  \tavg. steps: {:5.1f}; avg. score: {:4.1f} / {}."
                 print(msg.format(np.mean(self.avg_moves), np.mean(self.avg_scores), self.infos["max_score"]))
+
+class VectorPlayer:
+    def __init__(self, agent, path, max_step=100, verbose=True, num_agents=1):
+        torch.manual_seed(20211021)  # For reproducibility when using action sampling.
+
+        self.agent = agent
+        self.num_agents = num_agents
+        self.infos_to_request = agent.infos_to_request
+        self.infos_to_request.max_score = True  # Needed to normalize the scores.
+
+        self.path = path
+        self.verbose = verbose
+
+        self.gamefiles = [path]
+        if os.path.isdir(path):
+            self.gamefiles = glob(os.path.join(path, "*.z8"))
+
+        print(self.gamefiles)
+        self.env_id = textworld.gym.register_games(self.gamefiles,
+                                                   request_infos=self.infos_to_request,
+                                                   max_episode_steps=max_step, batch_size=num_agents,
+                                                   auto_reset=True)
+        print(self.env_id)
+        self.env = gym.make(self.env_id)  # Create a Gym environment to play the text game.
+        if verbose:
+            if os.path.isdir(path):
+                print(os.path.dirname(path), end="")
+            else:
+                print(os.path.basename(path), end="")
+
+        # Collect some statistics: nb_steps, final reward.
+        self.avg_moves, self.avg_scores, self.avg_norm_scores = [], [], []
+        self.nb_moves = 0
+        self.no_episode = 0
+        self.done = True
+
+    def resetEnv(self):
+        self.obs, self.infos = self.env.reset()  # Start new episode.
+
+        self.score = 0
+        self.done = False
+        self.nb_moves = 0
+
+    def runGame(self, lightmodel, steps=10):
+        print("running game for " + str(steps))
+        for i in range(steps):
+            # if self.done:
+            #     self.resetEnv()
+            #     print("reset env")
+
+            command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel)
+            self.obs, self.score, self.done, self.infos = self.env.step(command)
+            if hasattr(self.agent, 'reportScore'):
+                self.agent.reportScore(self.score, self.done, self.infos)
+            self.nb_moves += 1
+
+            if True in self.done:
+                self.no_episode += 1
+
+                if self.verbose:
+                    print(".", end="")
+                self.avg_scores.append(self.score)
+                self.avg_norm_scores.append(self.score / self.infos["max_score"])
+
+    def close(self):
+        self.env.close()
+        if self.verbose:
+            if os.path.isdir(self.path):
+                msg = "  \tavg. steps: {:5.1f}; avg. normalized score: {:4.1f} / {}."
+                print(msg.format(self.nb_moves/self.no_episode, np.mean(self.avg_norm_scores), 1))
+            else:
+                msg = "  \tavg. steps: {:5.1f}; avg. score: {:4.1f} / {}."
+                print(msg.format(self.nb_moves/self.no_episode, np.mean(self.avg_scores), self.infos["max_score"]))

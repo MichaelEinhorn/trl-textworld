@@ -1,6 +1,7 @@
 import math
 import os
 import sys
+from argparse import Namespace
 from dataclasses import dataclass, field
 from itertools import chain
 from typing import Optional
@@ -128,34 +129,37 @@ class RejectionTuner:
     def getDevice(self):
         return self.model.device
 
-    def __call__(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False):
-        return self.forward(input_ids, use_cache, past_key_values, outputVals, outputRef)
+    def __call__(self, input_ids, **kwargs):
+        return self.forward(input_ids, **kwargs)
+
     # values variable for compatability
-    def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False):
-        if past_key_values is None:
-            lmOut = self.model(input_ids, output_hidden_states=False, use_cache=use_cache)
-        else:
-            lmOut = self.model(input_ids, output_hidden_states=False, use_cache=use_cache, past_key_values=past_key_values)
-        # print(dir(lmOut))
-        logits = lmOut.logits
-        
-        output = [logits]
-        
-        if use_cache:
-            cache = lmOut.past_key_values
-            output.append(cache)
-        
+    def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False, attention_mask=None, outputLogits=True):
+        output = Namespace()
+        if outputLogits or outputVals:
+            if past_key_values is None:
+                lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache, attention_mask=attention_mask)
+            else:
+                lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache,
+                                   past_key_values=past_key_values, attention_mask=attention_mask)
+            # print(dir(lmOut))
+            if outputLogits:
+                logits = lmOut.logits
+                output.logits = logits
+
+            if use_cache:
+                cache = lmOut.past_key_values
+                output.cache = cache
+
         if outputRef:
             with torch.no_grad():
                 ref_logits = self.ref_model(input_ids).logits
-                output.append(ref_logits)
-                
+                output.ref_logits = ref_logits
+
         if outputVals:
             v = torch.tensor([[[0]]])
-            output.append(v)
-        # ref_logits, _, _ = self.ref_model(input_ids)
-        
-        return tuple(output)
+            output.values = v
+
+        return output
 
     # data is list of strings
     def startTraining(self):

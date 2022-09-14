@@ -112,9 +112,9 @@ class ReplayBuffer:
     def sample(self, batch_size):
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         # original states, actions, rewards, dones, next_states
-        scores, queries, responses, values, ret_cross, adv_cross = zip(*[self.buffer[idx] for idx in indices])
+        scores, queries, responses, next_value, ret_cross, adv_cross, value, logprob = zip(*[self.buffer[idx] for idx in indices])
 
-        return scores, queries, responses, values, ret_cross, adv_cross
+        return scores, queries, responses, next_value, ret_cross, adv_cross, value, logprob
         # return (np.array(scores, dtype=np.float32), np.array(queries), np.array(responses),
         #         np.array(values, dtype=np.float32), np.array(ret_cross, dtype=np.float32), np.array(adv_cross, dtype=np.float32))
 
