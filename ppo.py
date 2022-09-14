@@ -540,7 +540,7 @@ class PPOTrainer(pl.LightningModule):
         for score, logprob, ref_logprob in zip(scores, logprobs, ref_logprobs):
             kl = logprob - ref_logprob
             # for stats and adaptive update
-            self.kl_ctl_rew.kl_list.append(kl)
+            self.kl_ctl_rew.kl_list.append(kl.detach())
             non_score_reward = -self.kl_ctl_rew.value * kl
             non_score_rewards.append(non_score_reward)
             reward = non_score_reward.clone()
@@ -615,7 +615,7 @@ class PPOTrainer(pl.LightningModule):
         # backprop through ratio and kl
         kl = kl * ratio
         # for stats and adaptive update
-        self.kl_ctl.kl_list.append(kl)
+        self.kl_ctl.kl_list.append(kl.detach())
         # mean across tokens
         kl_loss = torch.mean(kl)
 
