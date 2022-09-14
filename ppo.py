@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader
 from torchinfo import summary
 
 from valueHead import ValueHead
-from games import Player, getEnvs
+from games import VectorPlayer, getEnvs
 
 from transformers import DataCollatorForLanguageModeling
 
@@ -38,7 +38,8 @@ from core import (logprobs_from_logits,
                   stats_to_np,
                   stack_dicts,
                   add_suffix,
-                  WANDB_PADDING)
+                  WANDB_PADDING,
+                  pad_mask)
 
 
 # using deepspeed pytorch-lightning
@@ -314,8 +315,6 @@ class PPOTrainer(pl.LightningModule):
         t = time.time()
         train_stats = stack_dicts(all_stats)
 
-        train_stats['epoch/batch'] = (self.epoch, nb_batch)
-
         # reshape advantages/ratios such that they are not averaged.
         train_stats['policy/advantages'] = torch.flatten(train_stats['policy/advantages']).unsqueeze(0)
         train_stats['policy/advantages'] = torch.nan_to_num(train_stats['policy/advantages'], WANDB_PADDING)
@@ -420,7 +419,8 @@ class PPOTrainer(pl.LightningModule):
             response_batch = responses[i * fbs:(i + 1) * fbs]
             model_input = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])
             input_ids = model_input["input_ids"]
-            attention_mask = model_input["attention_mask"]
+            attention_mask = pad_mask(input_ids, self.tokenizer.pad_token_id)
+            # print("forward pass mask ", attention_mask)
 
             with torch.no_grad():
                 # # logits, _, v = self.model(input_ids)
@@ -466,6 +466,7 @@ class PPOTrainer(pl.LightningModule):
             response_batch = responses[-rem:]
             input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])[
                 "input_ids"]
+            attention_mask = pad_mask(input_ids, self.tokenizer.pad_token_id)
 
             with torch.no_grad():
                 input_ids = input_ids.to(self.device)
@@ -509,13 +510,14 @@ class PPOTrainer(pl.LightningModule):
         """Train one PPO minibatch"""
         loss_total = None
         input_ids = model_input["input_ids"]
-        input_mask = model_input["attention_mask"]
+        input_mask = pad_mask(input_ids, self.tokenizer.pad_token_id)
         query_ids = query["input_ids"]
-        query_mask = query["attention_mask"]
+        query_mask = pad_mask(query_ids, self.tokenizer.pad_token_id)
         response_ids = response["input_ids"]
-        response_mask = response["attention_mask"]
+        response_mask = pad_mask(response_ids, self.tokenizer.pad_token_id)
 
-        logits, vpred = self.forward(input_ids, outputVals=True, attention_mask=input_mask)
+        lmout = self.forward(input_ids, outputVals=True, attention_mask=input_mask)
+        logits, vpred = lmout.logits, lmout.values
         for i in range(logits.shape[0]):
             # keep batch dim
             loss_p, loss_v, kl_loss, train_stats = self.loss(logits[i:i + 1], vpred[i:i + 1], logprobs[i:i + 1],
@@ -538,9 +540,11 @@ class PPOTrainer(pl.LightningModule):
         """Compute per token rewards from scores and KL-penalty."""
         rewards, non_score_rewards = [], []
         for score, logprob, ref_logprob in zip(scores, logprobs, ref_logprobs):
+            logprob = logprob.to(self.device)
+            ref_logprob = ref_logprob.to(self.device)
             kl = logprob - ref_logprob
             # for stats and adaptive update
-            self.kl_ctl_rew.kl_list.append(kl.detach())
+            self.kl_ctl_rew.kl_list.append(kl.detach().to("cpu"))
             non_score_reward = -self.kl_ctl_rew.value * kl
             non_score_rewards.append(non_score_reward)
             reward = non_score_reward.clone()
@@ -615,7 +619,7 @@ class PPOTrainer(pl.LightningModule):
         # backprop through ratio and kl
         kl = kl * ratio
         # for stats and adaptive update
-        self.kl_ctl.kl_list.append(kl.detach())
+        self.kl_ctl.kl_list.append(kl.detach().to("cpu"))
         # mean across tokens
         kl_loss = torch.mean(kl)
 
@@ -669,24 +673,28 @@ class PPOTrainer(pl.LightningModule):
 
 
 def train(model_name, single_game=True):
-    from agents import NLPAgent
+    from agents import NLPAgent, VectorNLPAgent
     from time import time
 
-    UPDATE_FREQUENCY = 16
+    UPDATE_FREQUENCY = 64
     LOG_FREQUENCY = 16
+    NUM_AGENTS = 4
+    
 
     buffer = ReplayBuffer(UPDATE_FREQUENCY)
-    agent = NLPAgent(buffer, humanTurns=0)
+    
 
     if single_game:
+        agent = NLPAgent(buffer, humanTurns=0)
         print("Training")
         agent.train()  # Tell the agent it should update its parameters.
         player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
 
     else:
+        agent = VectorNLPAgent(buffer, exTurns=0, num_agents=NUM_AGENTS)
         print("Training on 100 games")
         agent.train()  # Tell the agent it should update its parameters.
-        player = Player(agent, "./training_games/", verbose=False)  # Each game will be seen 5 times.
+        player = VectorPlayer(agent, "./training_games/", verbose=False, num_agents=NUM_AGENTS)  # Each game will be seen 5 times.
 
     ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': 8}
     ppo_trainer = PPOTrainer(model_name, player, buffer, agent, **ppo_config)

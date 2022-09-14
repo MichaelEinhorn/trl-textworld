@@ -118,6 +118,7 @@ class RejectionTuner:
         self.train_ds = RejectDataset(self.reject_buffer, self.reject_params['batch_size'])
 
         self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
+        self.current_epoch = 0
 
         if self.reject_params['adap_kl_ctrl']:
             self.kl_ctl = AdaptiveKLController(self.reject_params['init_kl_coef'],
@@ -167,11 +168,11 @@ class RejectionTuner:
         trainer.train()
 
     def on_epoch_begin(self, args, state, control, **kwargs):
-        epoch = int(state.epoch)
+        self.current_epoch = int(state.epoch)
         # fills reject dataset's buffer with a new set of experiences
-        if epoch % self.reject_params["epochs_per_game"] == 0:
+        if self.current_epoch % self.reject_params["epochs_per_game"] == 0:
             self.runGame()
-        print("epoch ", epoch)
+        print("epoch ", self.current_epoch)
 
     def runGame(self):
         # self is passing the model to do forward passes with
