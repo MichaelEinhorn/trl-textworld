@@ -143,6 +143,7 @@ class RLDatasetCollator():
         # print(values)
         values = tuple([torch.squeeze(v, 1) for v in values])
         # print(lengths)
+        # print(logprobs[0].shape, ref_logprobs[0].shape)
         # print(len(logprobs), logprobs[0].shape)
         # print(len(ref_logprobs), ref_logprobs[0].shape)
         return (torch.tensor(scores),

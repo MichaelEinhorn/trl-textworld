@@ -696,7 +696,7 @@ def train(model_name, single_game=True):
         agent.train()  # Tell the agent it should update its parameters.
         player = VectorPlayer(agent, "./training_games/", verbose=False, num_agents=NUM_AGENTS)  # Each game will be seen 5 times.
 
-    ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': 8}
+    ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': 4}
     ppo_trainer = PPOTrainer(model_name, player, buffer, agent, **ppo_config)
 
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy

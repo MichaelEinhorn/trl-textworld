@@ -263,8 +263,8 @@ class NLPAgent:
 
         # only grab last token
         # doesn't need shifting since input ids is already 1 longer than values
-        value = values[:, -new_tokens:]
-        first_value = value[0, 0, 0]
+        # val = values[:, -new_tokens:]
+        first_value = val[0, 0, 0]
         print("first value in action", first_value)
 
         self.memory.append(input_ + action)
@@ -276,7 +276,7 @@ class NLPAgent:
                 for letter in self.testCountLetters:
                     count += action.count(letter)
                 # count /= len(action)
-                reward = torch.tensor(count, dtype=values.dtype)
+                reward = torch.tensor(count, dtype=val.dtype)
                 print("reward")
                 print(reward)
                 self.rewValStat.append([lightmodel.current_epoch, reward, first_value.detach().cpu().numpy()])
@@ -284,14 +284,14 @@ class NLPAgent:
             if not self.returnNextValues:
                 self.transitions.append(
                     [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
-                     first_value.to(torch.device("cpu")), False, value.to("cpu"), logprob.to("cpu")])
+                     first_value.to(torch.device("cpu")), False, val.to("cpu"), logprob.to("cpu")])
             else:
                 #                                       # not done on last step
                 if len(self.transitions) != 0 and not self.transitions[-1][4]:
                     self.transitions[-1][3] = first_value.to(torch.device("cpu"))
                 self.transitions.append(
                     [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
-                     torch.tensor(0, dtype=value.dtype), False, value.to("cpu"), logprob.to("cpu")])
+                     torch.tensor(0, dtype=val.dtype), False, val.to("cpu"), logprob.to("cpu")])
 
         # removes non ascii chars and \
         action = clean_str(action)
@@ -350,7 +350,8 @@ class VectorNLPAgent:
 
     def _discount_rewards(self):
         returnsList, advantagesList = [], []
-        for trans in self.transitions:
+        for i in range(self.num_agents):
+            trans = self.transitions[i]
             R = 0
             returns, advantages = [], []
             for t in reversed(range(len(trans))):
@@ -371,7 +372,10 @@ class VectorNLPAgent:
         np.savetxt("rewVals.csv", self.rewValStat, delimiter=',')
         # get discounted returns and advantages across multiple actions. Currently not used
         returnsList, advantagesList = self._discount_rewards()
-        for trans, returns, advantages in zip(self.transitions, returnsList, advantagesList):
+        for i in range(self.num_agents):
+            trans = self.transitions[i]
+            returns = returnsList[i]
+            advantages = advantagesList[i]
             for t in reversed(range(len(trans))):
                 rew, prompt, action, next_value, done, value, logprob = trans[t]
                 ret_cross = returns[t]
@@ -390,9 +394,9 @@ class VectorNLPAgent:
             if self.mode == "train":
                 reward = score[i] - self.last_score[i]  # Reward is the gain/loss in score.
                 self.last_score[i] = score[i]
-                if infos[i]["won"]:
+                if infos["won"][i]:
                     reward += 100
-                if infos[i]["lost"]:
+                if infos["lost"][i]:
                     reward -= 100
 
                 if self.testCountLetters is None:
@@ -415,6 +419,7 @@ class VectorNLPAgent:
     def act(self, observation, score, done, infos, lightmodel):
         promptList = []
         inputList = []
+        # infos is dict of lists
         for i in range(self.num_agents):
             obs = observation[i]
             if self.clearTextWorldArt[i]:
@@ -429,9 +434,9 @@ class VectorNLPAgent:
             for mem in self.memory[i]:
                 pastStates = pastStates + mem + "\n"
             admissible_commands_str = "options: "
-            for adm_cmd in infos[i]["admissible_commands"]:
+            for adm_cmd in infos["admissible_commands"][i]:
                 admissible_commands_str += adm_cmd + ", "
-            input_ = "{}\n{}\n{}\n{}\nYou".format(obs, infos[i]["description"], infos[i]["inventory"], admissible_commands_str)
+            input_ = "{}\n{}\n{}\n{}\nYou".format(obs, infos["description"][i], infos["inventory"][i], admissible_commands_str)
             prompt = pastStates + input_
 
             # convert text to tensor
@@ -458,7 +463,7 @@ class VectorNLPAgent:
 
         values = 0
 
-        cache = [None for i in range(self.num_agents)]
+        cache = None
         # 0 is done, 1 is continuing
         finished = torch.ones((self.num_agents,), device=lightmodel.getDevice())
         maxLen = 20
@@ -471,10 +476,12 @@ class VectorNLPAgent:
             with torch.no_grad():
                 # get logits, only get last value
                 input_ids = input_ids.to(lightmodel.getDevice())
+                attention_mask = attention_mask.to(lightmodel.getDevice())
                 # input_ids = input_ids.to(lightmodel.model.device)
                 if cache is None:
                     lmout = lightmodel(input_ids, use_cache=True, outputVals=True, attention_mask=attention_mask)
                 else:
+                    # print("cache ", input_ids[:, -1:].shape, cache.shape)
                     lmout = lightmodel(input_ids[:, -1:], outputVals=True, use_cache=True,
                                                        past_key_values=cache, attention_mask=attention_mask)
 
@@ -485,50 +492,58 @@ class VectorNLPAgent:
                 probs = F.softmax(next_token_logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
                 input_ids = torch.cat([input_ids, next_token.unsqueeze(-1)], dim=-1)
+                
+                # keep last token in att
+                # breaks indexing if this is after the finished check
+                attention_mask = torch.cat([attention_mask, finished.unsqueeze(-1)], dim=-1)
 
                 for i in range(self.num_agents):
-                    if "\n" in lightmodel.tokenizer.decode(next_token[i]) or next_token[i] == lightmodel.tokenizer.eos_token:
+                    # only if not finished
+                    if finished[i] == 1 and ("\n" in lightmodel.tokenizer.decode(next_token[i]) or next_token[i] == lightmodel.tokenizer.eos_token):
                         finished[i] = 0
                         genLengths[i] = new_tokens + 1
 
-                attention_mask = torch.cat([attention_mask, finished.unsqueeze(-1)])
-                
                 logprob = logprobs_from_logits(logits[:, -1:, :], next_token.unsqueeze(-1))
                 logprobList.append(logprob)
                 valuesList.append(values[:, -1, :])
 
                 new_tokens += 1
                 
-        print(logprobList)
-        print(valuesList)
+        # print("att shape ", input_ids.shape, attention_mask.shape)
+        # print(logprobList)
+        # print(valuesList)
         logprob = torch.stack(logprobList, dim=1)
+        logprob = logprob.squeeze(2)
         values = torch.stack(valuesList, dim=1)
-
-        # doesn't need shifting since input ids is already 1 longer than logits
-        # logprobs = logprobs_from_logits(logits[:, -new_tokens:, :], input_ids[:, -new_tokens:])
+        
+        # print("val logp ", values.shape, logprob.shape)
 
         actionList = []
         for i in range(self.num_agents):
             inp = input_ids[i:i+1]
             att = attention_mask[i]
+            
 
             # first and last nonzero index
-            start = torch.arange(att.shape[0], 0, -1)
+            start = torch.arange(att.shape[0], 0, -1, device=lightmodel.device)
             start = torch.argmax(start * att)
-            end = torch.arange(att.shape[0])
+            end = torch.arange(att.shape[0], device=lightmodel.device)
             end = torch.argmax(end * att)
+            # print("att ", i, att, start, end, genLengths[i])
 
             inp = inp[:, start:end+1]
-            action_tens = input_ids[i:i+1, -genLengths[i]:]
-            prompt_tens = input_ids[i:i+1, :-genLengths[i]]
+            action_tens = inp[:, -genLengths[i]:]
+            prompt_tens = inp[:, :-genLengths[i]]
+            # print("inp act prompt shape ", inp.shape, action_tens.shape, prompt_tens.shape, i)
 
             action = lightmodel.tokenizer.decode(action_tens[0, :])
             input_ = inputList[i]
 
-            logprob = logprobs[i:i+1, genLengths[i]:]
+            # doesn't need shifting since input ids is already 1 longer than logprob
+            logp = logprob[i:i+1, :genLengths[i]]
 
             if self.exTurnsRemaining[0] > 0:
-                commands = infos[i]["admissible_commands"]
+                commands = infos["admissible_commands"][i]
                 idx = np.random.choice(len(commands))
                 action = commands[idx]
                 self.memory[i].append(input_ + action)
@@ -540,13 +555,13 @@ class VectorNLPAgent:
                 continue
 
             if i == 0:
-                # print("action")
+                print("action")
                 print(action)
 
             # doesn't need shifting since input ids is already 1 longer than values
-            value = values[i:i+1, -new_tokens:]
-            value = value[:, :genLengths[i]]
-            first_value = value[0, 0, 0]
+            val = values[i:i+1, :genLengths[i]]
+            # print(values.shape, val.shape, i)
+            first_value = val[0, 0, 0]
             if i == 0:
                 print("first value in action", first_value)
                 # print(value)
@@ -571,14 +586,14 @@ class VectorNLPAgent:
                 if not self.returnNextValues:
                     self.transitions[i].append(
                         [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
-                         first_value.to(torch.device("cpu")), False, value.to("cpu"), logprob.to("cpu")])
+                         first_value.to(torch.device("cpu")), False, val.to("cpu"), logp.to("cpu")])
                 else:
                     #                                       # not done on last step
                     if len(self.transitions[i]) != 0 and not self.transitions[i][-1][4]:
                         self.transitions[i][-1][3] = first_value.to(torch.device("cpu"))
-                    self.transitions.append(
+                    self.transitions[i].append(
                         [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
-                         torch.tensor(0, dtype=value.dtype), False, value.to("cpu"), logprob.to("cpu")])
+                         torch.tensor(0, dtype=val.dtype), False, val.to("cpu"), logp.to("cpu")])
 
             # removes non ascii chars and \
             action = clean_str(action)
