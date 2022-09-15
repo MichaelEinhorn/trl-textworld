@@ -1,5 +1,5 @@
 import numpy as np
-
+from pathlib import Path
 from typing import List, Mapping, Any, Optional
 from collections import defaultdict
 from datastructures import RollingBuffer
@@ -22,11 +22,13 @@ import string
 import re
 
 def clean_str(s):
-    printable = string.printable
-    printable = printable.replace("\\", "")
-    printable = printable.replace("^", "")
-    s = re.sub(rf'[^{printable}]', '', s)
+    allowed_chars = " " + string.ascii_letters + string.digits
+    s = re.sub(f'[^{allowed_chars}]', '', s)
     return s
+
+def printFile(s, i, epoch):
+        with open(f"trajectories/epoch_{epoch}_agent_{i}.txt", "a") as myfile:
+            myfile.write(s + "\n")
 
 class RandomAgent(textworld.gym.Agent):
     """ Agent that randomly selects a command from the admissible ones. """
@@ -326,6 +328,8 @@ class VectorNLPAgent:
         self.testCountLetters = ('e', 'E')  # None
 
         self.rewValStat = []
+        
+        Path("trajectories").mkdir(parents=True, exist_ok=True)
 
     def train(self):
         self.mode = "train"
@@ -415,10 +419,11 @@ class VectorNLPAgent:
                     # mark last transition of episode
                     if len(self.transitions[i]) != 0:
                         self.transitions[i][-1][4] = True
-
+                    
     def act(self, observation, score, done, infos, lightmodel):
         promptList = []
         inputList = []
+        epoch = lightmodel.current_epoch
         # infos is dict of lists
         for i in range(self.num_agents):
             obs = observation[i]
@@ -443,13 +448,15 @@ class VectorNLPAgent:
 
             if self.testCountLetters is not None:
                 prompt = "hello"
-                if i == 0:
-                    print(prompt)
+                # if i == 0:
+                #     print(prompt)
+                printFile(prompt, i, epoch)
 
             if self.testCountLetters is None:
-                if i == 0:
-                    # print("prompt tokens: ", input_ids.shape)
-                    print(input_)
+                # if i == 0:
+                #     # print("prompt tokens: ", input_ids.shape)
+                #     print(input_)
+                printFile(input_, i, epoch)
 
 
             promptList.append(prompt)
@@ -548,23 +555,26 @@ class VectorNLPAgent:
                 action = commands[idx]
                 self.memory[i].append(input_ + action)
                 self.exTurnsRemaining -= 1
-                if i == 0:
-                    # print("action")
-                    print(action)
+                # if i == 0:
+                #     # print("action")
+                #     print(action)
+                printFile(action, i, epoch)
                 actionList.append(action)
                 continue
 
-            if i == 0:
-                print("action")
-                print(action)
+            # if i == 0:
+            #     print("action")
+            #     print(action)
+            printFile(clean_str(action), i, epoch)
 
             # doesn't need shifting since input ids is already 1 longer than values
             val = values[i:i+1, :genLengths[i]]
             # print(values.shape, val.shape, i)
             first_value = val[0, 0, 0]
-            if i == 0:
-                print("first value in action", first_value)
-                # print(value)
+            # if i == 0:
+            #     print("first value in action", first_value)
+            #     # print(value)
+            printFile("first value in action " + str(first_value), i, epoch)
             # only grab last token
             # value = values[i, genLengths[i] - 1, 0]
 
@@ -579,8 +589,9 @@ class VectorNLPAgent:
                         count += action.count(letter)
                     # count /= len(action)
                     reward = torch.tensor(count, dtype=first_value.dtype)
-                    print("reward")
-                    print(reward)
+                    # if i == 0:
+                    #     print("reward", reward)
+                    printFile("reward " + str(reward), i, epoch)
                     self.rewValStat.append([lightmodel.current_epoch, reward, first_value.detach().cpu().numpy()])
 
                 if not self.returnNextValues:
