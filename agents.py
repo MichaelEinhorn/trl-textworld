@@ -64,8 +64,8 @@ class HumanAgent(textworld.gym.Agent):
 class NLPAgent:
     """ Hugging Face Transformer Agent """
 
-    GAMMA = 0.0
-    MEMORY_LEN = 0
+    GAMMA = 0.5
+    MEMORY_LEN = 3
 
     def __init__(self, buffer, humanTurns=0) -> None:
         self._initialized = False
@@ -304,8 +304,8 @@ class NLPAgent:
 class VectorNLPAgent:
     """ Hugging Face Transformer Agent """
 
-    GAMMA = 0.0
-    MEMORY_LEN = 0
+    GAMMA = 0.5
+    MEMORY_LEN = 2
 
     def __init__(self, buffer, exTurns=0, num_agents=1) -> None:
         self._initialized = False
@@ -438,19 +438,19 @@ class VectorNLPAgent:
             pastStates = ""
             for mem in self.memory[i]:
                 pastStates = pastStates + mem + "\n"
-            admissible_commands_str = "options: "
+            admissible_commands_str = "actions: "
             for adm_cmd in infos["admissible_commands"][i]:
                 admissible_commands_str += adm_cmd + ", "
-            input_ = "{}\n{}\n{}\n{}\nYou".format(obs, infos["description"][i], infos["inventory"][i], admissible_commands_str)
+            input_ = "{}\n{}\n{}\n{}\nWhat do you do?\n".format(obs, infos["description"][i], infos["inventory"][i], admissible_commands_str)
             prompt = pastStates + input_
 
             # convert text to tensor
 
             if self.testCountLetters is not None:
-                prompt = "hello"
+                # prompt = "hello"
                 # if i == 0:
                 #     print(prompt)
-                printFile(prompt, i, epoch)
+                printFile(input_, i, epoch)
 
             if self.testCountLetters is None:
                 # if i == 0:

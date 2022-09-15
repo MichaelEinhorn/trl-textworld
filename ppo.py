@@ -89,7 +89,7 @@ class PPOTrainer(pl.LightningModule):
         "horizon": 10000,
         # KL added to rewards at start of PPO Epochs
         "adap_kl_ctrl_rew": False,
-        "init_kl_coef_rew": 0.1,
+        "init_kl_coef_rew": 0.0,
         "target_rew": 6,
         "horizon_rew": 10000,
         # end KL
@@ -624,6 +624,7 @@ class PPOTrainer(pl.LightningModule):
             # 'objective/ref_logprobs': data['ref_logprobs'],
             'objective/kl_coef': self.kl_ctl.value,
             'objective/kl_coef_rew': self.kl_ctl_rew.value,
+            'objective/vf_coef': self.ppo_params['vf_coef'],
             'objective/entropy': mean_entropy,
             'ppo/mean_non_score_reward': mean_non_score_reward,
         }
@@ -642,7 +643,7 @@ def train(model_name, single_game=True):
     from time import time
 
     UPDATE_FREQUENCY = 64
-    FORWARD_BATCH = 4
+    FORWARD_BATCH = 2
     LOG_FREQUENCY = 1
     SAVE_FREQUENCY = 16
     NUM_AGENTS = 4
