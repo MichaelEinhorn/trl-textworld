@@ -307,16 +307,13 @@ class VectorNLPAgent:
     GAMMA = 0.5
     MEMORY_LEN = 2
 
-    def __init__(self, buffer, exTurns=0, num_agents=1) -> None:
+    def __init__(self, buffer, num_agents=1) -> None:
         self._initialized = False
         self._epsiode_has_started = False
         self.num_agents = num_agents
 
         self.memory = [RollingBuffer(self.MEMORY_LEN) for i in range(self.num_agents)]
         self.transitionBuffer = buffer
-
-        self.exTurns = exTurns
-        self.exTurnsRemaining = [self.exTurns for i in range(self.num_agents)]
 
         self.mode = "test"
         self.transitions = [[] for i in range(self.num_agents)]
@@ -415,15 +412,15 @@ class VectorNLPAgent:
                     self.last_score[i] = 0  # Will be starting a new episode. Reset the last score.
                     self.memory[i].clear()
                     self.clearTextWorldArt[i] = True
-                    self.exTurnsRemaining[i] = self.exTurns
                     # mark last transition of episode
                     if len(self.transitions[i]) != 0:
                         self.transitions[i][-1][4] = True
                     
-    def act(self, observation, score, done, infos, lightmodel):
+    def act(self, observation, score, done, infos, lightmodel, **kwargs):
         promptList = []
         inputList = []
         epoch = lightmodel.current_epoch
+
         # infos is dict of lists
         for i in range(self.num_agents):
             obs = observation[i]
@@ -458,9 +455,23 @@ class VectorNLPAgent:
                 #     print(input_)
                 printFile(input_, i, epoch)
 
-
             promptList.append(prompt)
             inputList.append(input_)
+
+        # does a random admissable action and adds to memory. Does not create a transition in experience buffer
+        actionList = []
+        if "exTurn" in kwargs:
+            if kwargs["exTurn"] == 1:
+                for i in range(self.num_agents):
+                    commands = infos["admissible_commands"][i]
+                    idx = np.random.choice(len(commands))
+                    action = commands[idx]
+                    input_ = inputList[i]
+                    self.memory[i].append(input_ + action)
+                    printFile("example turn", i, epoch)
+                    printFile(action, i, epoch)
+                    actionList.append(action)
+                return actionList
 
         model_input = lightmodel.tokenizer(promptList, add_special_tokens=True, return_tensors="pt", padding=True, return_attention_mask=True)
         input_ids = model_input["input_ids"]
@@ -525,7 +536,7 @@ class VectorNLPAgent:
         
         # print("val logp ", values.shape, logprob.shape)
 
-        actionList = []
+
         for i in range(self.num_agents):
             inp = input_ids[i:i+1]
             att = attention_mask[i]
@@ -548,19 +559,6 @@ class VectorNLPAgent:
 
             # doesn't need shifting since input ids is already 1 longer than logprob
             logp = logprob[i:i+1, :genLengths[i]]
-
-            if self.exTurnsRemaining[0] > 0:
-                commands = infos["admissible_commands"][i]
-                idx = np.random.choice(len(commands))
-                action = commands[idx]
-                self.memory[i].append(input_ + action)
-                self.exTurnsRemaining -= 1
-                # if i == 0:
-                #     # print("action")
-                #     print(action)
-                printFile(action, i, epoch)
-                actionList.append(action)
-                continue
 
             # if i == 0:
             #     print("action")

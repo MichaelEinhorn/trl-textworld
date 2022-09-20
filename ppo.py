@@ -659,10 +659,10 @@ def train(model_name, single_game=True):
         player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
 
     else:
-        agent = VectorNLPAgent(buffer, exTurns=0, num_agents=NUM_AGENTS)
+        agent = VectorNLPAgent(buffer, num_agents=NUM_AGENTS)
         print("Training on 100 games")
         agent.train()  # Tell the agent it should update its parameters.
-        player = VectorPlayer(agent, "./training_games/", verbose=False, num_agents=NUM_AGENTS)  # Each game will be seen 5 times.
+        player = VectorPlayer(agent, "./training_games/", verbose=False, num_agents=NUM_AGENTS, exTurns=0.25)  # Each game will be seen 5 times.
 
     ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': FORWARD_BATCH, "log_freq": LOG_FREQUENCY, "save_freq": SAVE_FREQUENCY}
     ppo_trainer = PPOTrainer(model_name, player, buffer, agent, **ppo_config)

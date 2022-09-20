@@ -101,8 +101,12 @@ class Player:
                 print(msg.format(np.mean(self.avg_moves), np.mean(self.avg_scores), self.infos["max_score"]))
 
 class VectorPlayer:
-    def __init__(self, agent, path, max_step=100, verbose=True, num_agents=1):
+    def __init__(self, agent, path, max_step=100, verbose=True, num_agents=1, **kwargs):
         torch.manual_seed(20211021)  # For reproducibility when using action sampling.
+
+        self.exTurns = None
+        if "exTurns" in kwargs:
+            self.exTurns = kwargs["exTurns"]
 
         self.agent = agent
         self.num_agents = num_agents
@@ -143,12 +147,24 @@ class VectorPlayer:
         self.nb_moves = 0
 
     def runGame(self, lightmodel, steps=10):
-        steps = steps // self.num_agents
         print("running game for " + str(steps))
         self.resetEnv()
+
+        exTurnSampler = None
+        if self.exTurns is not None:
+            exTurnSampler = torch.distributions.bernoulli.Bernoulli(probs=1 - self.exTurns)
         
-        for i in range(steps):
-            command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel)
+        while steps > 0:
+            stepsCompleted = self.num_agents
+
+            if self.exTurns is not None:
+                ex = exTurnSampler.sample()
+                if ex == 1:
+                    stepsCompleted = 0
+                command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel, exTurn=ex)
+            else:
+                command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel)
+
             self.obs, self.score, self.done, self.infos = self.env.step(command)
             if hasattr(self.agent, 'reportScore'):
                 self.agent.reportScore(self.score, self.done, self.infos)
@@ -161,6 +177,8 @@ class VectorPlayer:
                     print(".", end="")
                 self.avg_scores.append(self.score)
                 self.avg_norm_scores.append(self.score / self.infos["max_score"])
+
+            steps -= stepsCompleted
 
     def close(self):
         self.env.close()
