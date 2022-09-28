@@ -382,6 +382,6 @@ if __name__ == "__main__":
     train_args, unknown_args = parser.parse_args_into_dataclasses(return_remaining_strings=True)
     print(train_args)
     print(unknown_args)
-    train(model_name, train_args, single_game=single_game, num_agents=4)
+    train(model_name, train_args, single_game=single_game, NUM_AGENTS=num_agents)
     
 # deepspeed --num_gpus=1 rejectionSample.py --deepspeed ds_config_zero2.json --per_device_train_batch_size 1 --output_dir output_dir --overwrite_output_dir --fp16 --do_train --max_train_samples 500 --num_train_epochs 1
