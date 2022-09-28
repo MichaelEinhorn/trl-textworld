@@ -207,4 +207,5 @@ class RejectDataset(IterableDataset):
     def __iter__(self):
         lines = self.buffer.sample(self.sample_size)
         for i in range(len(lines)):
-            yield lines[i]
+            text, value = lines[i]
+            yield text

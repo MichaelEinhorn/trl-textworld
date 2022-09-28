@@ -21,6 +21,7 @@ from collections import OrderedDict, deque
 from typing import Tuple, List
 import torch.optim as optim
 from torch.optim import Optimizer
+from deepspeed.ops.adam import DeepSpeedCPUAdam
 from torch.utils.data import DataLoader
 from torchinfo import summary
 
@@ -284,7 +285,8 @@ class PPOTrainer(pl.LightningModule):
     def configure_optimizers(self) -> List[Optimizer]:
         """ Initialize Adam optimizer"""
         # self.optimizer = Adam(model.parameters(), lr=self.ppo_params['lr'])
-        optimizer = Adam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.ppo_params['lr'])
+        # optimizer = Adam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.ppo_params['lr'])
+        optimizer = DeepSpeedCPUAdam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.ppo_params['lr'])
         return [optimizer]
 
     def __dataloader(self) -> DataLoader:
