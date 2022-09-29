@@ -173,7 +173,7 @@ class RejectionTuner:
                 output.ref_logits = ref_logits
 
         if outputVals:
-            v = torch.tensor([[[0]]])
+            v = torch.zeros(list(logits.shape[0:2])+[1])
             output.values = v
 
         return output

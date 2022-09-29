@@ -499,7 +499,7 @@ class VectorNLPAgent:
                 if cache is None:
                     lmout = lightmodel(input_ids, use_cache=True, outputVals=True, attention_mask=attention_mask)
                 else:
-                    # print("cache ", input_ids[:, -1:].shape, cache.shape)
+                    print("cache ", input_ids[:, -1:].shape, len(cache), attention_mask.shape)
                     lmout = lightmodel(input_ids[:, -1:], outputVals=True, use_cache=True,
                                                        past_key_values=cache, attention_mask=attention_mask)
 
@@ -543,9 +543,9 @@ class VectorNLPAgent:
             
 
             # first and last nonzero index
-            start = torch.arange(att.shape[0], 0, -1, device=lightmodel.device)
+            start = torch.arange(att.shape[0], 0, -1, device=lightmodel.getDevice())
             start = torch.argmax(start * att)
-            end = torch.arange(att.shape[0], device=lightmodel.device)
+            end = torch.arange(att.shape[0], device=lightmodel.getDevice())
             end = torch.argmax(end * att)
             # print("att ", i, att, start, end, genLengths[i])
 
