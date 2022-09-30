@@ -228,7 +228,7 @@ class NLPAgent:
                     lmout = lightmodel(input_ids[:, -1:], outputVals=True, use_cache=True,
                                                        past_key_values=cache)
 
-                logits, cache, values = lmout.logits, lmout.cache, lmout.values
+                logits, cache, values = lmout["logits"], lmout["cache"], lmout["values"]
                 
                 
                 
@@ -499,11 +499,11 @@ class VectorNLPAgent:
                 if cache is None:
                     lmout = lightmodel(input_ids, use_cache=True, outputVals=True, attention_mask=attention_mask)
                 else:
-                    print("cache ", input_ids[:, -1:].shape, len(cache), attention_mask.shape)
+                    # print("cache ", input_ids[:, -1:].shape, len(cache), attention_mask.shape)
                     lmout = lightmodel(input_ids[:, -1:], outputVals=True, use_cache=True,
                                                        past_key_values=cache, attention_mask=attention_mask)
 
-                logits, cache, values = lmout.logits, lmout.cache, lmout.values
+                logits, cache, values = lmout["logits"], lmout["cache"], lmout["values"]
 
                 next_token_logits = logits[:, -1, :]
                 next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=0, top_p=1)

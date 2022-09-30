@@ -151,7 +151,7 @@ class RejectionTuner:
 
     # values variable for compatability
     def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False, attention_mask=None, outputLogits=True):
-        output = Namespace()
+        output = {}
         if outputLogits or outputVals:
             if past_key_values is None:
                 lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache, attention_mask=attention_mask)
@@ -161,20 +161,20 @@ class RejectionTuner:
             # print(dir(lmOut))
             if outputLogits:
                 logits = lmOut.logits
-                output.logits = logits
+                output["logits"] = logits
 
             if use_cache:
                 cache = lmOut.past_key_values
-                output.cache = cache
+                output["cache"] = cache
 
         if outputRef:
             with torch.no_grad():
                 ref_logits = self.ref_model(input_ids).logits
-                output.ref_logits = ref_logits
+                output["ref_logits"] = ref_logits
 
         if outputVals:
             v = torch.zeros(list(logits.shape[0:2])+[1])
-            output.values = v
+            output["values"] = v
 
         return output
 
@@ -186,7 +186,7 @@ class RejectionTuner:
         all_ref_logprobs = []
         all_values = []
 
-        output = Namespace()
+        output = {}
 
         for i in range(int(bs / fbs)):
             query_batch = queries[i * fbs:(i + 1) * fbs]
@@ -208,13 +208,13 @@ class RejectionTuner:
                 lmout = self.forward(input_ids, outputVals=outputVals, outputRef=outputRef, outputLogits=outputLogits, attention_mask=attention_mask)
 
                 if outputLogits:
-                    logits = lmout.logits
+                    logits = lmout["logits"]
                     logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
                 if outputRef:
-                    ref_logits = lmout.ref_logits
+                    ref_logits = lmout["ref_logits"]
                     ref_logprobs = logprobs_from_logits(ref_logits[:, :-1, :], input_ids[:, 1:])
                 if outputVals:
-                    v = lmout.v
+                    v = lmout["values"]
 
             for j in range(fbs):
                 # both logits and values are shifted 1 left from the input
@@ -248,13 +248,13 @@ class RejectionTuner:
                                      attention_mask=attention_mask)
 
                 if outputLogits:
-                    logits = lmout.logits
+                    logits = lmout["logits"]
                     logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
                 if outputRef:
-                    ref_logits = lmout.ref_logits
+                    ref_logits = lmout["ref_logits"]
                     ref_logprobs = logprobs_from_logits(ref_logits[:, :-1, :], input_ids[:, 1:])
                 if outputVals:
-                    v = lmout.v
+                    v = lmout["values"]
 
             for j in range(rem):
                 # both logits and values are shifted 1 left from the input
@@ -274,9 +274,9 @@ class RejectionTuner:
                 if outputRef:
                     all_ref_logprobs.append(ref_logprobs[j, -gen_len:])
 
-        output.logprobs = all_logprobs
-        output.values = all_values
-        output.ref_logprobs = all_ref_logprobs
+        output["logprobs"] = all_logprobs
+        output["values"] = all_values
+        output["ref_logprobs"] = all_ref_logprobs
         return output
 
     # data is list of strings
@@ -302,7 +302,7 @@ class RejectionTuner:
         bs = self.reject_params['batch_size']
 
         ref_logprobs = self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False,
-                                                 outputRef=True).ref_logprobs
+                                                 outputRef=True)["ref_logprobs"]
 
         # removes old experiences and only train on new ones. Remove to train on best of old and new
         # self.reject_buffer.clear()

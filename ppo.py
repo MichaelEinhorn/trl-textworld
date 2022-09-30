@@ -268,7 +268,7 @@ class PPOTrainer(pl.LightningModule):
 
         t = time.time()
         # logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
-        ref_logprobs = self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True).ref_logprobs
+        ref_logprobs = self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True)["ref_logprobs"]
 
         timing['time/ppo/forward_pass'] = time.time() - t
 
@@ -302,7 +302,7 @@ class PPOTrainer(pl.LightningModule):
         return self.__dataloader()
 
     def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False, attention_mask=None, outputLogits=True):
-        output = Namespace()
+        output = {}
         if outputLogits or outputVals:
             if past_key_values is None:
                 lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache, attention_mask=attention_mask)
@@ -312,21 +312,21 @@ class PPOTrainer(pl.LightningModule):
             # print(dir(lmOut))
             if outputLogits:
                 logits = lmOut.logits
-                output.logits = logits
+                output["logits"] = logits
 
             if use_cache:
                 cache = lmOut.past_key_values
-                output.cache = cache
+                output["cache"] = cache
 
             if outputVals:
                 hidden_state = lmOut.hidden_states[-1]
                 v = self.valueHead(hidden_state)
-                output.values = v
+                output["values"] = v
 
         if outputRef:
             with torch.no_grad():
                 ref_logits = self.ref_model(input_ids).logits
-                output.ref_logits = ref_logits
+                output["ref_logits"] = ref_logits
 
         return output
 
@@ -338,6 +338,9 @@ class PPOTrainer(pl.LightningModule):
         #         print(values)
 
         fbs = scores.shape[0]
+        
+        # reccomended by torch when zero3 config
+        torch.cuda.empty_cache()
         """
         Run a PPO optimisation step.
 
@@ -376,7 +379,7 @@ class PPOTrainer(pl.LightningModule):
         all_ref_logprobs = []
         all_values = []
 
-        output = Namespace()
+        output = {}
 
         for i in range(int(bs / fbs)):
             query_batch = queries[i * fbs:(i + 1) * fbs]
@@ -398,10 +401,10 @@ class PPOTrainer(pl.LightningModule):
                 lmout = self.forward(input_ids, outputVals=outputVals, outputRef=outputRef, outputLogits=outputLogits, attention_mask=attention_mask)
 
                 if outputLogits:
-                    logits = lmout.logits
+                    logits = lmout["logits"]
                     logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
                 if outputRef:
-                    ref_logits = lmout.ref_logits
+                    ref_logits = lmout["ref_logits"]
                     ref_logprobs = logprobs_from_logits(ref_logits[:, :-1, :], input_ids[:, 1:])
                 if outputVals:
                     v = lmout.v
@@ -438,10 +441,10 @@ class PPOTrainer(pl.LightningModule):
                                      attention_mask=attention_mask)
 
                 if outputLogits:
-                    logits = lmout.logits
+                    logits = lmout["logits"]
                     logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:, 1:])
                 if outputRef:
-                    ref_logits = lmout.ref_logits
+                    ref_logits = lmout["ref_logits"]
                     ref_logprobs = logprobs_from_logits(ref_logits[:, :-1, :], input_ids[:, 1:])
                 if outputVals:
                     v = lmout.v
@@ -464,9 +467,9 @@ class PPOTrainer(pl.LightningModule):
                 if outputRef:
                     all_ref_logprobs.append(ref_logprobs[j, -gen_len:])
 
-        output.logprobs = all_logprobs
-        output.values = all_values
-        output.ref_logprobs = all_ref_logprobs
+        output["logprobs"] = all_logprobs
+        output["values"] = all_values
+        output["ref_logprobs"] = all_ref_logprobs
         return output
 
     def train_minibatch(self, logprobs, values, rewards, query, response, model_input, lengths, values_next=(0.0,),
@@ -481,7 +484,7 @@ class PPOTrainer(pl.LightningModule):
         response_mask = pad_mask(response_ids, self.tokenizer.pad_token_id)
 
         lmout = self.forward(input_ids, outputVals=True, attention_mask=input_mask)
-        logits, vpred = lmout.logits, lmout.values
+        logits, vpred = lmout["logits"], lmout["values"]
         for i in range(logits.shape[0]):
             # keep batch dim
             loss_p, loss_v, kl_loss, train_stats = self.loss(logits[i:i + 1], vpred[i:i + 1], logprobs[i:i + 1],
@@ -688,7 +691,7 @@ def train(model_name, single_game=True):
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(
-            config="ds_config_zero2_light.json"
+            config="ds_config_zero3_light.json"
         ),
     )
 
