@@ -2,13 +2,11 @@ from transformers import top_k_top_p_filtering
 from transformers.modeling_outputs import ModelOutput
 from torch import nn
 from torch.nn import Identity
-import torch.nn.functional as F
-import torch
-from dataclasses import dataclass
-from typing import Optional, Tuple
+
 
 class ValueHead(nn.Module):
     """The ValueHead class implements a head for GPT2 that returns a scalar for each output token."""
+
     def __init__(self, config):
         super().__init__()
         self.detach_head = False
