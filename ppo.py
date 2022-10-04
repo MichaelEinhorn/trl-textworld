@@ -536,7 +536,7 @@ class PPOTrainer(pl.LightningModule):
 
         for t in reversed(range(gen_len)):
             nextvalues = values[:, t + 1] if t < gen_len - 1 else values_next
-            delta = rewards[:, t] + self.ppo_params['gamma'] * (nextvalues - values[:, t])
+            delta = rewards[:, t] + self.ppo_params['gamma'] * nextvalues - values[:, t]
             lastgaelam = delta + self.ppo_params['gamma'] * self.ppo_params['lam'] * lastgaelam
             advantages_reversed.append(lastgaelam)
         advantages = torch.stack(advantages_reversed[::-1]).transpose(0, 1)
