@@ -1,29 +1,48 @@
-import math
-import os
-import sys
+# sepparates value head from the model so that it can be a drop in transformer where output_hidden_states is an option
+from pathlib import Path
+import numpy as np
+import torch.nn.functional as F
+from torch.optim import Adam
+import torch
+import collections
+import time
+import random
 from argparse import Namespace
-from dataclasses import dataclass, field
-from itertools import chain
-from typing import Optional
 
-import transformers
-from transformers import Trainer
-from transformers import TrainingArguments
-from transformers import HfArgumentParser
+from agents import VectorNLPAgent, NLPAgent
+from datastructures import RejectDataset
+from datastructures import RejectionBuffer
+from datastructures import ReplayBuffer
+from datastructures import LineBuffer
+from datastructures import RejectDatasetCollator
+
+import pytorch_lightning as pl
+import argparse
+from collections import OrderedDict, deque
+from typing import Tuple, List
+import torch.optim as optim
+from torch.optim import Optimizer
+from deepspeed.ops.adam import DeepSpeedCPUAdam
+from torch.utils.data import DataLoader
 from torchinfo import summary
 
+from trlTrainer import TRLTrainer
+from valueHead import ValueHead
+from games import VectorPlayer, getEnvs, Player
+
 from transformers import DataCollatorForLanguageModeling
-from datastructures import RejectionBuffer, RejectDataset, ReplayBuffer
 
-import torch
-import numpy as np
-from agents import NLPAgent, VectorNLPAgent
-
-from games import Player, VectorPlayer, getEnvs
-
-from core import pad_mask, logprobs_from_logits
-
-# using deepspeed huggingface trainer integreation
+from core import (logprobs_from_logits,
+                  whiten,
+                  clip_by_value,
+                  entropy_from_logits,
+                  flatten_dict,
+                  average_torch_dicts,
+                  stats_to_np,
+                  stack_dicts,
+                  add_suffix,
+                  WANDB_PADDING,
+                  pad_mask)
 
 def set_seed(args):
     np.random.seed(args.seed)
@@ -41,6 +60,7 @@ class AdaptiveKLController:
         self.value = init_kl_coef
         self.target = target
         self.horizon = horizon
+        self.kl_list = []
 
     def update(self, current, n_steps):
         target = self.target
@@ -54,100 +74,65 @@ class FixedKLController:
 
     def __init__(self, kl_coef):
         self.value = kl_coef
+        self.kl_list = []
 
     def update(self, current, n_steps):
         pass
 
-from transformers import TrainerCallback
-class CallBackRouter(TrainerCallback):
-    def __init__(self, obj):
-        self.obj = obj
 
-    def on_epoch_begin(self, args, state, control, **kwargs):
-        if hasattr(self.obj, 'on_epoch_begin'):
-            self.obj.on_epoch_begin(args, state, control, **kwargs)
-
-
-class RejectionTuner:
+class RejectionTuner(TRLTrainer):
     default_params = {
+        "alg_name": "reject",
         "lr": 1.41e-5,
+        # KL Calcuated per forward batch importance corrected exact gradients
         "adap_kl_ctrl": False,
-        "init_kl_coef": 0.2,
+        "init_kl_coef": 0.1,
         "target": 6,
         "horizon": 10000,
+        # KL added to rewards at start of Reject Epochs
         "adap_kl_ctrl_rew": False,
-        "init_kl_coef_rew": 0.2,
+        "init_kl_coef_rew": 0.0,
         "target_rew": 6,
         "horizon_rew": 10000,
+        # end KL
         "batch_size": 256,
+        "forward_batch_size": 16,
         "epochs_per_game": 4,
+        "clear_buffer_each_game": True,
+        "train_generation": False,
+        # compat with ppo
+        'vf_coef': 0
     }
 
-    
-
-    def __init__(self, model_name, player, agent, buffer, train_args=None):
-
-        self.reject_params = self.default_params
-        # self.reject_params.update(reject_params)
-        # calls on epoch begin method
-        self.callBackRouter = CallBackRouter(self)
-
-        self.player = player
-
-        # gpt2 and gpt2-xl
-        if 'gpt2' in model_name:
-            from transformers import GPT2Tokenizer, GPT2Model, GPT2LMHeadModel
-            self.model = GPT2LMHeadModel.from_pretrained(model_name)
-            self.ref_model = GPT2LMHeadModel.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-        elif 'gpt-j' in model_name:
-            from transformers import GPT2Tokenizer, GPTJForCausalLM
-            self.model = GPTJForCausalLM.from_pretrained(model_name)
-            self.ref_model = GPTJForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2', padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-        elif 'gpt-neo' in model_name:
-            from transformers import GPTNeoForCausalLM, GPT2Tokenizer
-            self.model = GPTNeoForCausalLM.from_pretrained(model_name)
-            self.ref_model = GPTNeoForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-
-        print(self.model.config.torch_dtype)
-        summary(self.model)
-
-        self.config = self.model.config
-
-        self.agent = agent
-        self.agent_buffer = buffer
-
-        self.train_args = train_args
-        self.reject_buffer = RejectionBuffer(min=False)
-        self.train_ds = RejectDataset(self.reject_buffer, self.reject_params['batch_size'])
-
-        self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
-        self.current_epoch = 0
-
-        if self.reject_params['adap_kl_ctrl']:
-            self.kl_ctl = AdaptiveKLController(self.reject_params['init_kl_coef'],
-                                               self.reject_params['target'],
-                                               self.reject_params['horizon'])
-        else:
-            self.kl_ctl = FixedKLController(self.reject_params['init_kl_coef'])
-
-        if self.reject_params['adap_kl_ctrl_rew']:
-            self.kl_ctl_rew = AdaptiveKLController(self.reject_params['init_kl_coef_rew'],
-                                               self.reject_params['target_rew'],
-                                               self.reject_params['horizon_rew'])
-        else:
-            self.kl_ctl_rew = FixedKLController(self.reject_params['init_kl_coef_rew'])
+    def __init__(self, model_name, player, buffer, agent, **params):
+        super().__init__()
+        self.trainer_buffer = RejectionBuffer(min=False)
+        self.rejectRatio = 0
 
     def getDevice(self):
-        return self.model.device
+        return self.device
 
     def __call__(self, input_ids, **kwargs):
         return self.forward(input_ids, **kwargs)
+    
+    def __dataloader(self) -> DataLoader:
+        dataset = RejectDataset(self.trainer_buffer, self.reject_params['batch_size'])
+        dataloader = DataLoader(dataset=dataset,
+                                batch_size=self.params['forward_batch_size'],
+                                collate_fn=RejectDatasetCollator(text_collator=self.data_collator)
+                                )
+        return dataloader
+
+    def train_dataloader(self) -> DataLoader:
+        """Get train loader"""
+        return self.__dataloader()
+
+    def configure_optimizers(self) -> List[Optimizer]:
+        """ Initialize Adam optimizer"""
+        # self.optimizer = Adam(model.parameters(), lr=self.params['lr'])
+        # optimizer = Adam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
+        optimizer = DeepSpeedCPUAdam(self.model.parameters(), lr=self.params['lr'])
+        return [optimizer]
 
     # values variable for compatability
     def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False, attention_mask=None, outputLogits=True):
@@ -279,53 +264,102 @@ class RejectionTuner:
         output["ref_logprobs"] = all_ref_logprobs
         return output
 
-    # data is list of strings
-    def startTraining(self):
-        trainer = Trainer(model=self.model, args=self.train_args, train_dataset=self.train_ds, tokenizer=self.tokenizer, callbacks=[self.callBackRouter])
-        trainer.train()
+    def on_train_epoch_end(self):
+        if self.current_epoch % self.params['save_freq'] == 0:
+            t = time.time()
+            self.model.save_pretrained(f"checkpoints/{self.alg_name}_model_epoch_{self.current_epoch}")
+            self.saveModelTime = time.time() - t
 
-    def on_epoch_begin(self, args, state, control, **kwargs):
-        self.current_epoch = int(state.epoch)
-        # fills reject dataset's buffer with a new set of experiences
-        if self.current_epoch % self.reject_params["epochs_per_game"] == 0:
-            self.runGame()
-        print("epoch ", self.current_epoch)
+        if self.current_epoch % self.params['log_freq'] == 0:
+            data, scores_kl = self.trainer_buffer.sample(self.params['batch_size'])
+            scores, _, _, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = data
+
+            timing = dict()
+            timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
+
+            timing['time/filesystem/save_model'] = self.saveModelTime
+            timing['time/filesystem/save_stats'] = self.saveStatTime
+
+            t = time.time()
+            train_stats = stack_dicts(self.all_stats)
+
+            train_stats['rejectRatio'] = self.rejectRatio
+            train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
+
+            # print("kl list ", len(self.kl_ctl_rew.kl_list))
+            stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
+                                           non_score_reward=non_score_reward, train_stats=train_stats)
+            stats = stats_to_np(stats)
+            timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
+
+            self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
+            self.kl_ctl_rew.update(stats['objective/kl_rew'],
+                                   self.params['log_freq'] * self.params['batch_size'] // self.params[
+                                       f'epochs_per_game'])
+
+            # timing[f'time/{self.alg_name}/total'] = time.time() - t0
+            stats.update(timing)
+            # print(stats)
+            t = time.time()
+            torch.save(stats, f"stats/{self.alg_name}_epoch_{self.current_epoch}-step_{self.global_step}.pt")
+            self.saveStatTime = time.time() - t
 
     def runGame(self):
+        if self.params["clear_buffer_each_game"]:
+            self.trainer_buffer.clear()
+
         # self is passing the model to do forward passes with
-        self.player.runGame(self, self.reject_params['batch_size'])
+        self.player.runGame(self, self.params['game_batch_size'])
         self.agent.fillBuffer()
+        self.kl_ctl_rew.kl_list = []
         scores, queries, responses, values_next, ret_cross, adv_cross, values, logprobs = self.agent_buffer.sample(
-            self.reject_params['batch_size'])
+            self.params['batch_size'])
 
         # first part of original step, gets old logprobs and ref logprobs
-        bs = self.reject_params['batch_size']
+        bs = self.params['batch_size']
+        assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"
 
-        ref_logprobs = self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False,
-                                                 outputRef=True)["ref_logprobs"]
+        timing = dict()
+        t0 = time.time()
 
-        # removes old experiences and only train on new ones. Remove to train on best of old and new
-        # self.reject_buffer.clear()
+        response_lengths = [len(r) for r in responses]
 
-        rewards, non_score_rewards = self.compute_rewards(scores, logprobs, ref_logprobs)
+        t = time.time()
+        # logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
+        ref_logprobs = \
+        self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True)[
+            "ref_logprobs"]
 
+        timing[f'time/{self.alg_name}/forward_pass'] = time.time() - t
+
+        # print("run game")
+        # print(values)
+
+        t = time.time()
+        rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
+        timing[f'time/{self.alg_name}/compute_rewards'] = time.time() - t
+
+        scores_kl = []
         for i in range(int(bs)):
             query = queries[i]
             response = responses[i]
             # use returns discounted across multiple transitions
 
-            score = ret_cross[i]
-            kl_rew = torch.sum(non_score_rewards)
-            score += kl_rew
+            score_kl = ret_cross[i]
+            kl_rew = torch.sum(non_score_reward[i])
+            score_kl += kl_rew
+            scores_kl.append(score_kl)
             # use only current rewards
             # scores_batch = scores[i]
 
-            input_ids = torch.cat([query, response])["input_ids"]
+        for lineItem, score_kl in zip(zip(scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs,
+                            values, rewards, non_score_reward), scores_kl):
+            self.trainer_buffer.append(lineItem, score_kl)
 
-            self.reject_buffer.append(input_ids, score)
-
-        self.reject_buffer.reject(0.5, threshType="frac")
-
+        start_n = len(self.trainer_buffer)
+        self.trainer_buffer.reject(self.params["batch_size"], threshType="top n")
+        reject_n = len(self.trainer_buffer)
+        self.rejectRatio = reject_n / start_n
 
     def compute_rewards(self, scores, logprobs, ref_logprobs):
         """Compute per token rewards from scores and KL-penalty."""
@@ -342,6 +376,80 @@ class RejectionTuner:
             reward[-1] += score
             rewards.append(reward)
         return rewards, non_score_rewards
+
+    # data is list of strings
+    def training_step(self, batch, nb_batch):
+        scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, old_logprobs, ref_logprobs, values, rewards, non_score_reward, reject_scores = batch
+        fbs = scores.shape[0]
+
+        loss_total = None
+        input_ids = model_input["input_ids"]
+        input_mask = pad_mask(input_ids, self.tokenizer.pad_token_id)
+        query_ids = queries["input_ids"]
+        query_mask = pad_mask(query_ids, self.tokenizer.pad_token_id)
+        response_ids = responses["input_ids"]
+        response_mask = pad_mask(response_ids, self.tokenizer.pad_token_id)
+
+        lmout = self.forward(input_ids, outputVals=False, outputRef=False, attention_mask=input_mask)
+        logits = lmout["logits"]
+        logits_shifted = logits[:, :-1]
+        targets = input_ids[:, 1:]
+        target_mask = input_mask[:, 1:]
+
+        logprob = logprobs_from_logits(logits, targets)
+
+        ce_loss_batch = torch.tensor(0)
+        kl_loss_batch = torch.tensor(0)
+        train_stats = []
+
+        if not self.params["train_generation"]:
+            ce_loss_batch = F.cross_entropy(logits_shifted.view(-1, logits_shifted.size(-1)), targets.view(-1), ignore_index=self.tokenizer.pad_token_id)
+        ce_loss = ce_loss_batch
+
+        for i in range(fbs):
+            querry_len = lengths[i][0]
+            gen_len = lengths[i][1]
+            total_len = lengths[i][2]
+
+            targ = targets[i:i+1, -gen_len:]
+            logit = logits_shifted[i:i+1, -gen_len:]
+            logp = logprob[i:i+1, -gen_len:]
+
+            ref_logp = ref_logprobs[i:i+1, :gen_len]
+            old_logp = old_logprobs[i:i+1, :gen_len]
+
+            if self.params["train_generation"]:
+                ce_loss = F.cross_entropy(logits_shifted.view(-1, logit.size(-1)), targ.view(-1), ignore_index=self.tokenizer.pad_token_id)
+                ce_loss_batch += ce_loss
+
+            kl = logp - ref_logp
+            ratio = torch.exp(logprob - old_logprobs)
+            kl = kl * ratio
+            # for stats and adaptive update
+            self.kl_ctl.kl_list.append(kl.detach().to("cpu"))
+            # mean across tokens
+            kl_loss = torch.mean(kl)
+            kl_loss_batch += kl_loss
+
+            entropy = torch.mean(entropy_from_logits(logit))
+            approxkl = .5 * torch.mean((logp - old_logp) ** 2)
+            policykl = torch.mean(logp - old_logp)
+
+            loss = ce_loss + self.kl_ctl.value * kl_loss
+
+            stats = dict(
+                loss=dict(policy=ce_loss, kl=kl_loss, total=loss),
+                policy=dict(entropy=entropy, approxkl=approxkl, policykl=policykl, ratio=ratio),
+            )
+            train_stats.append(stats)
+
+        self.all_stats.extend(train_stats)
+
+        kl_loss_batch /= fbs
+        if self.params["train_generation"]:
+            ce_loss /= fbs
+
+        return ce_loss_batch + self.kl_ctl.value * kl_loss_batch
 
 
 def train(model_name, train_args, single_game=True, NUM_AGENTS=1):
@@ -365,23 +473,47 @@ def train(model_name, train_args, single_game=True, NUM_AGENTS=1):
         player = VectorPlayer(agent, "./training_games/", verbose=False, num_agents=NUM_AGENTS,
                               exTurns=0.25)  # Each game will be seen 5 times.
 
-    reject_params = {'batch_size': UPDATE_FREQUENCY}
-    #         def __init__(self, model_name, player, agent, buffer, train_args, **reject_params):
-    reject_tuner = RejectionTuner(model_name, player, agent, buffer, train_args=train_args)
-    reject_tuner.startTraining()
+    params = {'batch_size': UPDATE_FREQUENCY,
+              'game_batch_size': UPDATE_FREQUENCY * 2}
+    reject_tuner = RejectionTuner(model_name, player, buffer, agent, **params)
+
+    from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
+    # trainer = pl.Trainer(
+    #     logger=False,
+    #     accelerator='gpu', devices=1,
+    #     max_epochs=500,
+    #     precision=16,
+    #     strategy=DeepSpeedStrategy(
+    #         stage=3,
+    #         offload_optimizer=True,
+    #         offload_parameters=False,
+    #         ),
+    #     )
+    trainer = pl.Trainer(
+        enable_checkpointing=False,
+        logger=False,
+        accelerator='gpu', devices=1,
+        max_epochs=500,
+        precision=16,
+        strategy=DeepSpeedStrategy(
+            config="ds_config_zero3_light.json"
+        ),
+    )
+    trainer.fit(reject_tuner)
+
 
 if __name__ == "__main__":
-    model_name = 'gpt2-xl'
-    # model_name = 'gptj'
-    single_game = False
-    num_agents = 4
-    getEnvs()
+    import argparse
 
-    print(TrainingArguments)
-    parser = HfArgumentParser(TrainingArguments)
-    train_args, unknown_args = parser.parse_args_into_dataclasses(return_remaining_strings=True)
-    print(train_args)
-    print(unknown_args)
-    train(model_name, train_args, single_game=single_game, NUM_AGENTS=num_agents)
-    
-# deepspeed --num_gpus=1 rejectionSample.py --deepspeed ds_config_zero2.json --per_device_train_batch_size 1 --output_dir output_dir --overwrite_output_dir --fp16 --do_train --max_train_samples 500 --num_train_epochs 1
+    getEnvs()
+    print("generated envs")
+
+    # model_name = 'gpt2-xl'
+    # model_name = 'EleutherAI/gpt-j-6B'
+    model_name = 'EleutherAI/gpt-neo-1.3B'
+    single_game = False
+
+    Path("stats").mkdir(parents=True, exist_ok=True)
+    Path("checkpoints").mkdir(parents=True, exist_ok=True)
+
+    train(model_name, single_game)

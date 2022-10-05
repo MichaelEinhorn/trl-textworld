@@ -26,9 +26,11 @@ from torch.utils.data import DataLoader
 from torchinfo import summary
 
 from valueHead import ValueHead
-from games import VectorPlayer, getEnvs
+from games import VectorPlayer, getEnvs, Player
 
 from transformers import DataCollatorForLanguageModeling
+
+from trlTrainer import TRLTrainer
 
 from core import (logprobs_from_logits,
                   whiten,
@@ -76,12 +78,13 @@ class FixedKLController:
         pass
 
 
-class PPOTrainer(pl.LightningModule):
+class PPOTrainer(TRLTrainer):
     """
     The PPO_trainer uses Proximal Policy Optimization to optimise language models.
     """
 
     default_params = {
+        "alg_name": "ppo",
         "lr": 1.41e-5,
         # KL Calcuated per forward batch importance corrected exact gradients
         "adap_kl_ctrl": False,
@@ -101,127 +104,31 @@ class PPOTrainer(pl.LightningModule):
         "vf_coef": .1,
         "batch_size": 256,
         "forward_batch_size": 16,
-        "ppo_epochs": 4,
+        "epochs_per_game": 4,
     }
 
-    def __init__(self, model_name, player, buffer, agent, **ppo_params):
-        super().__init__()
-        """
-        Initialize PPOTrainer.
-
-        Args:
-            model (torch.model): Hugging Face transformer GPT2 model with value head
-            ref_model (torch.model): Hugging Face transformer GPT2 refrence model used for KL penalty
-            tokenizer (tokenizer): Hugging Face tokenizer
-            ppo_params (dict or None): PPO parameters for training. Can include following keys:
-                'lr' (float): Adam learning rate, default: 1.41e-5
-                'batch_size' (int): Number of samples per optimisation step, default: 256
-                'forward_batch_size' (int): Number of samples forward passed through model at a time, default: 16
-                'ppo_epochs' (int): Number of optimisation epochs per batch of samples, default: 4
-                'gamma' (float)): Gamma parameter for advantage calculation, default: 1.
-                'lam' (float): Lambda parameter for advantage calcualation, default: 0.95
-                'cliprange_value' (float): Range for clipping values in loss calculation, default: 0.2
-                'cliprange' (float): Range for clipping in PPO policy gradient loss, default: 0.2
-                'vf_coef' (float): Scaling factor for value loss, default: 0.1
-                'adap_kl_ctrl' (bool): Use adaptive KL control, otherwise linear, default: True
-                'init_kl_coef' (float): Initial KL penalty coefficient (used for adaptive and linear control), default: 0.2
-                'target' (float): Target KL value for adaptive KL control, default: 6.0
-                'horizon' (float): Horizon for adaptive KL control, default: 10000
-
-        """
-
-        self.ppo_params = self.default_params
-        self.ppo_params.update(ppo_params)
-
-        self.agent_buffer = buffer
-        self.ppo_buffer = LineBuffer(self.ppo_params['batch_size'])
-        self.player = player
-
-        # gpt2 and gpt2-xl
-        if 'gpt2' in model_name:
-            from transformers import GPT2Tokenizer, GPT2Model, GPT2LMHeadModel
-            self.model = GPT2LMHeadModel.from_pretrained(model_name)
-            self.ref_model = GPT2LMHeadModel.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-        elif 'gpt-j' in model_name:
-            from transformers import GPT2Tokenizer, GPTJForCausalLM
-            self.model = GPTJForCausalLM.from_pretrained(model_name)
-            self.ref_model = GPTJForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2', padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-        elif 'gpt-neo' in model_name:
-            from transformers import GPTNeoForCausalLM, GPT2Tokenizer
-            self.model = GPTNeoForCausalLM.from_pretrained(model_name)
-            self.ref_model = GPTNeoForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-
-        print(self.model.config.torch_dtype)
-        summary(self.model)
-
-        self.config = self.model.config
-        # copied from gpt2.py, not sure what this does
+    def __init__(self, model_name, player, buffer, agent, **params):
+        super().__init__(model_name, player, buffer, agent, **params)
         self.config.num_labels = 1
         self.valueHead = ValueHead(self.config)
+        self.trainer_buffer = LineBuffer(self.params['batch_size'])
 
-        # make value head same precision as model
-        # if self.config.torch_dtype == torch.float16:
-        #     self.valueHead = self.valueHead.half()
-
-        self.agent = agent
-
-        # print(self.valueHead)
-
-        self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
-
-        if self.ppo_params['adap_kl_ctrl']:
-            self.kl_ctl = AdaptiveKLController(self.ppo_params['init_kl_coef'],
-                                               self.ppo_params['target'],
-                                               self.ppo_params['horizon'])
-        else:
-            self.kl_ctl = FixedKLController(self.ppo_params['init_kl_coef'])
-
-        if self.ppo_params['adap_kl_ctrl_rew']:
-            self.kl_ctl_rew = AdaptiveKLController(self.ppo_params['init_kl_coef_rew'],
-                                               self.ppo_params['target_rew'],
-                                               self.ppo_params['horizon_rew'])
-        else:
-            self.kl_ctl_rew = FixedKLController(self.ppo_params['init_kl_coef_rew'])
-            
-        self.all_stats = []
-        
-        self.saveModelTime = 0
-        self.saveStatTime = 0
-
-    def getDevice(self):
-        return self.device
-
-    # def on_train_start(self):
-    #     self.runGame()
-    def on_train_epoch_start(self):
-        # train on the same data ppo epochs times before generating a new set
-        if self.current_epoch % self.ppo_params['ppo_epochs'] == 0:
-            self.runGame()
-            
-        self.ppo_epoch_time = time.time()
-        
-        
     def on_train_epoch_end(self):
-        if self.current_epoch % self.ppo_params['save_freq'] == 0:
+        if self.current_epoch % self.params['save_freq'] == 0:
             t = time.time()
-            self.model.save_pretrained(f"checkpoints/RL_model_epoch_{self.current_epoch}")
-            torch.save(self.valueHead.state_dict(), f"checkpoints/RL_valueHead_epoch_{self.current_epoch}.pt")
+            self.model.save_pretrained(f"checkpoints/{self.alg_name}_model_epoch_{self.current_epoch}")
+            torch.save(self.valueHead.state_dict(),
+                       f"checkpoints/{self.alg_name}_valueHead_epoch_{self.current_epoch}.pt")
             self.saveModelTime = time.time() - t
-            
-        
-        if self.current_epoch % self.ppo_params['log_freq'] == 0:
-            data = self.ppo_buffer.sample(self.ppo_params['batch_size'])
-            scores, _, _, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
+
+        if self.current_epoch % self.params['log_freq'] == 0:
+            data = self.trainer_buffer.sample(self.params['batch_size'])
+            scores, _, _, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(
+                *data)
 
             timing = dict()
-            timing['time/ppo/optimize_step'] = time.time() - self.ppo_epoch_time
-            
+            timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
+
             timing['time/filesystem/save_model'] = self.saveModelTime
             timing['time/filesystem/save_stats'] = self.saveStatTime
 
@@ -232,33 +139,35 @@ class PPOTrainer(pl.LightningModule):
             train_stats['policy/advantages'] = torch.flatten(train_stats['policy/advantages']).unsqueeze(0)
             train_stats['policy/advantages'] = torch.nan_to_num(train_stats['policy/advantages'], WANDB_PADDING)
             train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
-            
+
             # print("kl list ", len(self.kl_ctl_rew.kl_list))
             stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
                                            non_score_reward=non_score_reward, train_stats=train_stats)
             stats = stats_to_np(stats)
-            timing['time/ppo/calc_stats'] = time.time() - t
+            timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
 
-            self.kl_ctl.update(stats['objective/kl'], self.ppo_params['log_freq'] * self.ppo_params['batch_size'])
-            self.kl_ctl_rew.update(stats['objective/kl_rew'], self.ppo_params['log_freq'] * self.ppo_params['batch_size'] // self.ppo_params['ppo_epochs'])
+            self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
+            self.kl_ctl_rew.update(stats['objective/kl_rew'],
+                                   self.params['log_freq'] * self.params['batch_size'] // self.params[
+                                       f'epochs_per_game'])
 
-            # timing['time/ppo/total'] = time.time() - t0
+            # timing[f'time/{self.alg_name}/total'] = time.time() - t0
             stats.update(timing)
             # print(stats)
             t = time.time()
-            torch.save(stats, f"stats/RL_epoch_{self.current_epoch}-step_{self.global_step}.pt")
+            torch.save(stats, f"stats/{self.alg_name}_epoch_{self.current_epoch}-step_{self.global_step}.pt")
             self.saveStatTime = time.time() - t
 
     def runGame(self):
         # self is passing the model to do forward passes with
-        self.player.runGame(self, self.ppo_params['batch_size'])
+        self.player.runGame(self, self.params['batch_size'])
         self.agent.fillBuffer()
         self.kl_ctl_rew.kl_list = []
         scores, queries, responses, values_next, ret_cross, adv_cross, values, logprobs = self.agent_buffer.sample(
-            self.ppo_params['batch_size'])
+            self.params['batch_size'])
 
         # first part of original step, gets old logprobs and ref logprobs
-        bs = self.ppo_params['batch_size']
+        bs = self.params['batch_size']
         assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"
 
         timing = dict()
@@ -268,31 +177,33 @@ class PPOTrainer(pl.LightningModule):
 
         t = time.time()
         # logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
-        ref_logprobs = self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True)["ref_logprobs"]
+        ref_logprobs = \
+        self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True)[
+            "ref_logprobs"]
 
-        timing['time/ppo/forward_pass'] = time.time() - t
+        timing[f'time/{self.alg_name}/forward_pass'] = time.time() - t
 
         # print("run game")
         # print(values)
 
         t = time.time()
         rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
-        timing['time/ppo/compute_rewards'] = time.time() - t
+        timing[f'time/{self.alg_name}/compute_rewards'] = time.time() - t
         for lineItem in zip(scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs,
                             values, rewards, non_score_reward):
-            self.ppo_buffer.append(lineItem)
+            self.trainer_buffer.append(lineItem)
 
     def configure_optimizers(self) -> List[Optimizer]:
         """ Initialize Adam optimizer"""
-        # self.optimizer = Adam(model.parameters(), lr=self.ppo_params['lr'])
-        # optimizer = Adam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.ppo_params['lr'])
-        optimizer = DeepSpeedCPUAdam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.ppo_params['lr'])
+        # self.optimizer = Adam(model.parameters(), lr=self.params['lr'])
+        # optimizer = Adam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
+        optimizer = DeepSpeedCPUAdam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
         return [optimizer]
 
     def __dataloader(self) -> DataLoader:
-        dataset = RLDataset(self.ppo_buffer, self.ppo_params['batch_size'])
+        dataset = RLDataset(self.ppo_buffer, self.params['batch_size'])
         dataloader = DataLoader(dataset=dataset,
-                                batch_size=self.ppo_params['forward_batch_size'],
+                                batch_size=self.params['forward_batch_size'],
                                 collate_fn=RLDatasetCollator(text_collator=self.data_collator)
                                 )
         return dataloader
@@ -330,51 +241,10 @@ class PPOTrainer(pl.LightningModule):
 
         return output
 
-    def training_step(self, batch, nb_batch):
-        # rew, prompt[0], action[0], values, ret_cross, adv_cross
-        scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
-
-        #         print("train step")
-        #         print(values)
-
-        fbs = scores.shape[0]
-        
-        # reccomended by torch when zero3 config
-        torch.cuda.empty_cache()
-        """
-        Run a PPO optimisation step.
-
-        args:
-            queries (List): List of tensors containing the encoded queries, shape [query_length]
-            responses (List): List of tensors containing the encoded responses, shape [response_length]
-            scores (List): tensor containing the scores, shape [batch_size]
-
-        returns:
-            train_stats (dict): a summary of the training statistics
-        """
-
-        # print(queries[0].shape)
-
-        t = time.time()
-        timing = dict()
-        
-        # moved to start train epoch, loops through dataset ppo_epochs times before generating a new set
-        # for _ in range(self.ppo_params['ppo_epochs']):
-        train_stats, loss = self.train_minibatch(logprobs, values,
-                                                 rewards, queries,
-                                                 responses,
-                                                 model_input, lengths,
-                                                 values_next=values_next, ref_logprobs=ref_logprobs)
-        self.all_stats.append(train_stats)
-        
-        
-
-        return loss
-
     def batched_forward_pass(self, queries, responses, outputLogits=True, outputVals=True, outputRef=True):
         """Calculate model outputs in multiple batches."""
-        bs = self.ppo_params['batch_size']
-        fbs = self.ppo_params['forward_batch_size']
+        bs = self.params['batch_size']
+        fbs = self.params['forward_batch_size']
         all_logprobs = []
         all_ref_logprobs = []
         all_values = []
@@ -472,6 +342,24 @@ class PPOTrainer(pl.LightningModule):
         output["ref_logprobs"] = all_ref_logprobs
         return output
 
+    def training_step(self, batch, nb_batch):
+        scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
+        fbs = scores.shape[0]
+
+        # reccomended by torch when zero3 config
+        torch.cuda.empty_cache()
+        t = time.time()
+        timing = dict()
+
+        train_stats, loss = self.train_minibatch(logprobs, values,
+                                                 rewards, queries,
+                                                 responses,
+                                                 model_input, lengths,
+                                                 values_next=values_next, ref_logprobs=ref_logprobs)
+        self.all_stats.extend(train_stats)
+
+        return loss
+
     def train_minibatch(self, logprobs, values, rewards, query, response, model_input, lengths, values_next=(0.0,),
                         ref_logprobs=None):
         """Train one PPO minibatch"""
@@ -483,41 +371,25 @@ class PPOTrainer(pl.LightningModule):
         response_ids = response["input_ids"]
         response_mask = pad_mask(response_ids, self.tokenizer.pad_token_id)
 
-        lmout = self.forward(input_ids, outputVals=True, attention_mask=input_mask)
+        lmout = self.forward(input_ids, outputVals=True, outputRef=False, attention_mask=input_mask)
         logits, vpred = lmout["logits"], lmout["values"]
+        train_stats = []
         for i in range(logits.shape[0]):
             # keep batch dim
-            loss_p, loss_v, kl_loss, train_stats = self.loss(logits[i:i + 1], vpred[i:i + 1], logprobs[i:i + 1],
+            loss_p, loss_v, kl_loss, stat = self.loss(logits[i:i + 1], vpred[i:i + 1], logprobs[i:i + 1],
                                                              values[i:i + 1], rewards[i:i + 1], query_ids[i:i + 1],
                                                              response_ids[i:i + 1], input_ids[i:i + 1], lengths[i],
                                                              values_next=values_next[i:i + 1],
                                                              ref_logprobs=ref_logprobs[i:i + 1])
             loss = loss_p + loss_v + kl_loss
 
+            train_stats.append(stat)
+
             if loss_total is None:
                 loss_total = loss
             else:
                 loss_total += loss
-        # self.optimizer.zero_grad()
-        # loss.backward()
-        # self.optimizer.step()
         return train_stats, loss
-
-    def compute_rewards(self, scores, logprobs, ref_logprobs):
-        """Compute per token rewards from scores and KL-penalty."""
-        rewards, non_score_rewards = [], []
-        for score, logprob, ref_logprob in zip(scores, logprobs, ref_logprobs):
-            logprob = logprob.to(self.device)
-            ref_logprob = ref_logprob.to(self.device)
-            kl = logprob - ref_logprob
-            # for stats and adaptive update
-            self.kl_ctl_rew.kl_list.append(kl.detach().to("cpu"))
-            non_score_reward = -self.kl_ctl_rew.value * kl
-            non_score_rewards.append(non_score_reward)
-            reward = non_score_reward.clone()
-            reward[-1] += score
-            rewards.append(reward)
-        return rewards, non_score_rewards
 
     def loss(self, logits, vpred, old_logprobs, values, rewards, query, response, input_ids, lengths, values_next=0.0,
              ref_logprobs=None):
@@ -536,8 +408,8 @@ class PPOTrainer(pl.LightningModule):
 
         for t in reversed(range(gen_len)):
             nextvalues = values[:, t + 1] if t < gen_len - 1 else values_next
-            delta = rewards[:, t] + self.ppo_params['gamma'] * nextvalues - values[:, t]
-            lastgaelam = delta + self.ppo_params['gamma'] * self.ppo_params['lam'] * lastgaelam
+            delta = rewards[:, t] + self.params['gamma'] * nextvalues - values[:, t]
+            lastgaelam = delta + self.params['gamma'] * self.params['lam'] * lastgaelam
             advantages_reversed.append(lastgaelam)
         advantages = torch.stack(advantages_reversed[::-1]).transpose(0, 1)
 
@@ -562,8 +434,8 @@ class PPOTrainer(pl.LightningModule):
         # logprob, vpred = logprob[:, total_len-gen_len:total_len], vpred[:, total_len-gen_len - 1:total_len-1]
 
         vpredclipped = clip_by_value(vpred,
-                                     values - self.ppo_params["cliprange_value"],
-                                     values + self.ppo_params["cliprange_value"])
+                                     values - self.params["cliprange_value"],
+                                     values + self.params["cliprange_value"])
 
         vf_losses1 = (vpred - returns) ** 2
         vf_losses2 = (vpredclipped - returns) ** 2
@@ -574,8 +446,8 @@ class PPOTrainer(pl.LightningModule):
 
         pg_losses = -advantages * ratio
         pg_losses2 = -advantages * torch.clamp(ratio,
-                                               1.0 - self.ppo_params['cliprange'],
-                                               1.0 + self.ppo_params['cliprange'])
+                                               1.0 - self.params['cliprange'],
+                                               1.0 + self.params['cliprange'])
 
         pg_loss = torch.mean(torch.max(pg_losses, pg_losses2))
         pg_clipfrac = torch.mean(torch.gt(pg_losses2, pg_losses).double())
@@ -590,7 +462,7 @@ class PPOTrainer(pl.LightningModule):
         # mean across tokens
         kl_loss = torch.mean(kl)
 
-        loss = pg_loss + self.ppo_params['vf_coef'] * vf_loss + self.kl_ctl.value * kl_loss
+        loss = pg_loss + self.params['vf_coef'] * vf_loss + self.kl_ctl.value * kl_loss
 
         entropy = torch.mean(entropy_from_logits(logits))
         approxkl = .5 * torch.mean((logprob - old_logprobs) ** 2)
@@ -606,41 +478,7 @@ class PPOTrainer(pl.LightningModule):
             val=dict(vpred=torch.mean(vpred), error=torch.mean((vpred - returns) ** 2),
                      clipfrac=vf_clipfrac, mean=value_mean, var=value_var),
         )
-        return pg_loss, self.ppo_params['vf_coef'] * vf_loss, self.kl_ctl.value * kl_loss, flatten_dict(stats)
-
-    def record_step_stats(self, **data):
-        """Record training step statistics."""
-        # kl_list = [logprobs - ref_logprobs for logprobs, ref_logprobs in zip(data['logprobs'], data['ref_logprobs'])]
-        kl_list = self.kl_ctl.kl_list
-        mean_kl = torch.mean(torch.stack([torch.sum(kl) for kl in kl_list]))
-        kl_list_rew = self.kl_ctl_rew.kl_list
-        mean_kl_rew = torch.mean(torch.stack([torch.sum(kl) for kl in kl_list_rew]))
-
-        mean_entropy = torch.mean(torch.stack([torch.sum(-log_probs) for log_probs in data['logprobs']]))
-        mean_non_score_reward = torch.mean(
-            torch.stack([torch.sum(non_score_reward) for non_score_reward in data['non_score_reward']]))
-        stats = {
-            'objective/kl': mean_kl,
-            'objective/kl_dist': kl_list,
-            'objective/kl_rew': mean_kl_rew,
-            'objective/kl_dist_rew': kl_list_rew,
-            # too big, makes file messy
-            # 'objective/logprobs': data['logprobs'],
-            # 'objective/ref_logprobs': data['ref_logprobs'],
-            'objective/kl_coef': self.kl_ctl.value,
-            'objective/kl_coef_rew': self.kl_ctl_rew.value,
-            'objective/vf_coef': self.ppo_params['vf_coef'],
-            'objective/entropy': mean_entropy,
-            'ppo/mean_non_score_reward': mean_non_score_reward,
-        }
-                   
-        self.kl_ctl.kl_list = []
-        
-
-        for k, v in data['train_stats'].items():
-            stats[f'ppo/{k}'] = torch.mean(v, axis=0)
-        stats['ppo/val/var_explained'] = 1 - stats['ppo/val/error'] / stats['ppo/returns/var']
-        return stats
+        return pg_loss, self.params['vf_coef'] * vf_loss, self.kl_ctl.value * kl_loss, flatten_dict(stats)
 
 
 def train(model_name, single_game=True):

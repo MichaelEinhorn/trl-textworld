@@ -286,7 +286,8 @@ class NLPAgent:
             if not self.returnNextValues:
                 self.transitions.append(
                     [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
-                     first_value.to(torch.device("cpu")), False, val.to("cpu"), logprob.to("cpu")])
+                     first_value.to(torch.device("cpu")), False, self.GAMMA * val.to("cpu"), logprob.to("cpu")])
+                # additional discount for cross experience values
             else:
                 #                                       # not done on last step
                 if len(self.transitions) != 0 and not self.transitions[-1][4]:
@@ -595,7 +596,8 @@ class VectorNLPAgent:
                 if not self.returnNextValues:
                     self.transitions[i].append(
                         [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
-                         first_value.to(torch.device("cpu")), False, val.to("cpu"), logp.to("cpu")])
+                         first_value.to(torch.device("cpu")), False, self.GAMMA * val.to("cpu"), logp.to("cpu")])
+                    # additional discount for cross experience values
                 else:
                     #                                       # not done on last step
                     if len(self.transitions[i]) != 0 and not self.transitions[i][-1][4]:

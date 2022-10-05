@@ -195,17 +195,44 @@ class LineDataset(IterableDataset):
         for i in range(len(lines)):
             yield lines[i]
 
-
 class RejectDataset(IterableDataset):
     def __init__(self, buffer: RejectionBuffer, sample_size: int = 200):
         self.buffer = buffer
         self.sample_size = sample_size
-        
-    def __len__(self):
-        return len(self.buffer)
 
     def __iter__(self):
-        lines = self.buffer.sample(self.sample_size)
-        for i in range(len(lines)):
-            text, value = lines[i]
-            yield text
+        data, reject_scores = self.buffer.sample(self.sample_size)
+        scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
+        for i in range(0, len(scores)):
+            # padding matches the batches but this means padded querry + padded response is not padded (querry + response)
+            model_input = torch.cat([queries[i], responses[i]])
+            lengths = (queries[i].shape[0], responses[i].shape[0], model_input.shape[0])
+            yield scores[i], queries[i], responses[i], model_input, lengths, values_next[i], ret_cross[i], adv_cross[i], logprobs[i], ref_logprobs[i], values[i], rewards[i], non_score_reward[i], reject_scores[i]
+
+class RejectDatasetCollator():
+    def __init__(self, text_collator=None):
+        self.text_collator = text_collator
+
+    def __call__(self, data):
+        scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward, reject_scores = zip(*data)
+        # print(values)
+        values = tuple([torch.squeeze(v, 1) for v in values])
+        # print(lengths)
+        # print(logprobs[0].shape, ref_logprobs[0].shape)
+        # print(len(logprobs), logprobs[0].shape)
+        # print(len(ref_logprobs), ref_logprobs[0].shape)
+        return (torch.tensor(scores),
+                self.text_collator(queries),
+                self.text_collator(responses),
+                self.text_collator(model_input),
+                torch.tensor(lengths),
+                torch.tensor(values_next),
+                torch.tensor(ret_cross),
+                torch.tensor(adv_cross),
+                padded_stack(logprobs),
+                padded_stack(ref_logprobs),
+                padded_stack(values),
+                padded_stack(rewards),
+                padded_stack(non_score_reward),
+                torch.tensor(reject_scores)
+                )
