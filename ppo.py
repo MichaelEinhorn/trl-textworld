@@ -143,6 +143,8 @@ class PPOTrainer(TRLTrainer):
             # print("kl list ", len(self.kl_ctl_rew.kl_list))
             stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
                                            non_score_reward=non_score_reward, train_stats=train_stats)
+            stats[f'{self.alg_name}/val/var_explained'] = 1 - stats[f'{self.alg_name}/val/error'] / stats[f'{self.alg_name}/returns/var']
+            
             stats = stats_to_np(stats)
             timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
 
@@ -201,7 +203,7 @@ class PPOTrainer(TRLTrainer):
         return [optimizer]
 
     def __dataloader(self) -> DataLoader:
-        dataset = RLDataset(self.ppo_buffer, self.params['batch_size'])
+        dataset = RLDataset(self.trainer_buffer, self.params['batch_size'])
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=self.params['forward_batch_size'],
                                 collate_fn=RLDatasetCollator(text_collator=self.data_collator)

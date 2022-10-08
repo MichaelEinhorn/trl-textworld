@@ -176,7 +176,7 @@ class VectorPlayer:
                 if self.verbose:
                     print(".", end="")
                 self.avg_scores.append(self.score)
-                self.avg_norm_scores.append(self.score / self.infos["max_score"])
+                # self.avg_norm_scores.append(self.score / self.infos["max_score"])
 
             steps -= stepsCompleted
 

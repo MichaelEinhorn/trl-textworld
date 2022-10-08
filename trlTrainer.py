@@ -208,6 +208,6 @@ class TRLTrainer(pl.LightningModule):
         
 
         for k, v in data['train_stats'].items():
+            # print(k, v)
             stats[f'{self.alg_name}/{k}'] = torch.mean(v, axis=0)
-        stats[f'{self.alg_name}/val/var_explained'] = 1 - stats[f'{self.alg_name}/val/error'] / stats[f'{self.alg_name}/returns/var']
         return stats

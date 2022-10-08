@@ -49,19 +49,32 @@ class RejectionBuffer:
 
     def reject(self, p, threshType="frac"):
         if threshType == "frac":
-            idxs = np.argsort(self.values)
+            idxs = torch.argsort(torch.stack(self.values))
             if not self.min:
-                idxs = idxs[::-1]
-            idxs = idxs[:len(self.values * p)]
-            self.text = self.text[idxs]
-            self.values = self.values[idxs]
+                # idxs = idxs[::-1]
+                idxs = torch.flip(idxs, [0])
+                
+            num = len(self.values * p)
+            idxs = idxs[:num]
+            for i in range(num):
+                tempText.append(self.text[idxs[i]])
+                tempVal.append(self.values[idxs[i]])
+            self.text = tempText
+            self.values = tempVal
+            
         if threshType == "top n":
-            idxs = np.argsort(self.values)
+            idxs = torch.argsort(torch.stack(self.values))
             if not self.min:
-                idxs = idxs[::-1]
+                # idxs = idxs[::-1]
+                idxs = torch.flip(idxs, [0])
             idxs = idxs[:p]
-            self.text = self.text[idxs]
-            self.values = self.values[idxs]
+            tempText = []
+            tempVal = []
+            for i in range(p):
+                tempText.append(self.text[idxs[i]])
+                tempVal.append(self.values[idxs[i]])
+            self.text = tempText
+            self.values = tempVal
 
     def clear(self):
         self.values = []
@@ -69,7 +82,12 @@ class RejectionBuffer:
 
     def sample(self, batch_size):
         idxs = np.random.choice(len(self.values), batch_size, replace=False)
-        return self.text[idxs], self.values[idxs]
+        tempText = []
+        tempVal = []
+        for i in range(batch_size):
+            tempText.append(self.text[idxs[i]])
+            tempVal.append(self.values[idxs[i]])
+        return tempText, tempVal
 
 
 class ExperienceSourceDataset(IterableDataset):
