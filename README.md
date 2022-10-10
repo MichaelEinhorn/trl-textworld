@@ -24,6 +24,7 @@ Separate Value Head from LM. Fixes model loading errors and makes it far easier 
 KL divergence term with exact gradients on the current model. Importance sampling corrected for the distribution of the last model.
 Implemented Rejection Sampling. Either keep top % or top N trajectories.
 Add examples of valid or correct actions to the context window. Both allows the model to explore more states before learning how to solve the first one and gives it an example it can use.
+About 3 prior states and actions can fit inside the context window, but this significantly increases RAM Requirements.
 Optimizations
 Pytorch Lightning Deepspeed for PPO, and Rejection Sampling. Enables fitting much larger models and larger batch sizes into the same GPU RAM. (Untested multi gpu support)
 Batching for both the environment and text gen forward passes in gameplay. Batching for all Forward and backward passes in PPO. Loss calculations from the model outputs are still per sample.
