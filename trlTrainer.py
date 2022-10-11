@@ -135,6 +135,8 @@ class TRLTrainer(pl.LightningModule):
         
         self.saveModelTime = 0
         self.saveStatTime = 0
+        self.epoch_time = 0
+        self.game_time = 0
 
     def getDevice(self):
         return self.device
@@ -152,7 +154,10 @@ class TRLTrainer(pl.LightningModule):
     def on_train_epoch_start(self):
         # train on the same data epochs per game times before generating a new set
         if self.current_epoch % self.params['epochs_per_game'] == 0:
+            game_time = time.time()
             self.runGame()
+            self.game_time = time.time() - game_time
+            print("game time ", self.game_time)
             
         self.epoch_time = time.time()
 

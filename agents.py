@@ -549,6 +549,8 @@ class VectorNLPAgent:
             end = torch.arange(att.shape[0], device=lightmodel.getDevice())
             end = torch.argmax(end * att)
             # print("att ", i, att, start, end, genLengths[i])
+            printFile("genlen, start, end", i, epoch)
+            printFile(str(genLengths[i]) + ", " + str(start) + ", "  + str(end), i, epoch)
 
             inp = inp[:, start:end+1]
             action_tens = inp[:, -genLengths[i]:]
@@ -565,6 +567,8 @@ class VectorNLPAgent:
             #     print("action")
             #     print(action)
             printFile(clean_str(action), i, epoch)
+            if action != clean_str(action):
+                printFile("uncleaned action: " + action, i, epoch)
 
             # doesn't need shifting since input ids is already 1 longer than values
             val = values[i:i+1, :genLengths[i]]

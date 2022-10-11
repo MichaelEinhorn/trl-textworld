@@ -128,6 +128,7 @@ class PPOTrainer(TRLTrainer):
 
             timing = dict()
             timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
+            timing[f'time/{self.alg_name}/game_time'] = self.game_time
 
             timing['time/filesystem/save_model'] = self.saveModelTime
             timing['time/filesystem/save_stats'] = self.saveStatTime
@@ -498,10 +499,12 @@ def train(model_name, single_game=True):
     
 
     if single_game:
-        agent = NLPAgent(buffer, humanTurns=0)
+        # agent = NLPAgent(buffer, humanTurns=0)
+        agent = VectorNLPAgent(buffer, num_agents=NUM_AGENTS)
         print("Training")
         agent.train()  # Tell the agent it should update its parameters.
-        player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
+        # player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
+        player = VectorPlayer(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False, num_agents=NUM_AGENTS, exTurns=0.25)
 
     else:
         agent = VectorNLPAgent(buffer, num_agents=NUM_AGENTS)
@@ -552,4 +555,4 @@ if __name__ == "__main__":
     Path("stats").mkdir(parents=True, exist_ok=True)
     Path("checkpoints").mkdir(parents=True, exist_ok=True)
 
-    train(model_name, single_game)
+    train(model_name, single_game=single_game)

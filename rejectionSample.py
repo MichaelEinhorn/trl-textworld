@@ -276,7 +276,8 @@ class RejectionTuner(TRLTrainer):
 
             timing = dict()
             timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
-
+            timing[f'time/{self.alg_name}/game_time'] = self.game_time
+            
             timing['time/filesystem/save_model'] = self.saveModelTime
             timing['time/filesystem/save_stats'] = self.saveStatTime
 

@@ -152,7 +152,7 @@ class VectorPlayer:
 
         exTurnSampler = None
         if self.exTurns is not None:
-            exTurnSampler = torch.distributions.bernoulli.Bernoulli(probs=1 - self.exTurns)
+            exTurnSampler = torch.distributions.bernoulli.Bernoulli(probs=self.exTurns)
         
         while steps > 0:
             stepsCompleted = self.num_agents
