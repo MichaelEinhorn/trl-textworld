@@ -27,8 +27,15 @@
         "stage3_max_live_parameters": 1e9,
         "stage3_max_reuse_distance": 1e9,
         "stage3_gather_16bit_weights_on_model_save": true
+        },
+"activation_checkpointing": {
+        "partition_activations": true,
+        "cpu_checkpointing": true,
+        "contiguous_memory_optimization": false,
+        "number_checkpoints": 8,
+        "synchronize_checkpoint_boundary": false,
+        "profile": false
     },
-
     "steps_per_print": 2000,
     "wall_clock_breakdown": false
 }

@@ -25,7 +25,7 @@ class RollingBuffer:
             return None
 
     def clear(self):
-        self.queue = deque([])
+        self.queue.clear()
 
 
 class RejectionBuffer:
@@ -115,6 +115,9 @@ class ReplayBuffer:
 
     def __init__(self, capacity):
         self.buffer = deque(maxlen=capacity)
+        
+    def clear(self):
+        self.buffer.clear()
 
     def __len__(self):
         return len(self.buffer)
@@ -188,6 +191,9 @@ class LineBuffer:
 
     def __init__(self, capacity):
         self.buffer = deque(maxlen=capacity)
+        
+    def clear(self):
+        self.buffer.clear()
 
     def __len__(self):
         return len(self.buffer)

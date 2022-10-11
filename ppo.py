@@ -135,6 +135,7 @@ class PPOTrainer(TRLTrainer):
 
             t = time.time()
             train_stats = stack_dicts(self.all_stats)
+            self.all_stats = []
 
             # reshape advantages/ratios such that they are not averaged.
             train_stats['policy/advantages'] = torch.flatten(train_stats['policy/advantages']).unsqueeze(0)
@@ -162,6 +163,8 @@ class PPOTrainer(TRLTrainer):
             self.saveStatTime = time.time() - t
 
     def runGame(self):
+        self.trainer_buffer.clear()
+        self.agent_buffer.clear()
         # self is passing the model to do forward passes with
         self.player.runGame(self, self.params['batch_size'])
         self.agent.fillBuffer()
@@ -385,7 +388,6 @@ class PPOTrainer(TRLTrainer):
                                                              values_next=values_next[i:i + 1],
                                                              ref_logprobs=ref_logprobs[i:i + 1])
             loss = loss_p + loss_v + kl_loss
-
             train_stats.append(stat)
 
             if loss_total is None:
@@ -481,7 +483,7 @@ class PPOTrainer(TRLTrainer):
             val=dict(vpred=torch.mean(vpred), error=torch.mean((vpred - returns) ** 2),
                      clipfrac=vf_clipfrac, mean=value_mean, var=value_var),
         )
-        return pg_loss, self.params['vf_coef'] * vf_loss, self.kl_ctl.value * kl_loss, flatten_dict(stats)
+        return pg_loss, self.params['vf_coef'] * vf_loss, self.kl_ctl.value * kl_loss, stats_to_np(flatten_dict(stats))
 
 
 def train(model_name, single_game=True):

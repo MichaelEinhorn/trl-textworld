@@ -283,6 +283,7 @@ class RejectionTuner(TRLTrainer):
 
             t = time.time()
             train_stats = stack_dicts(self.all_stats)
+            self.all_stats = []
 
             train_stats['rejectRatio'] = self.rejectRatio
             train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
@@ -308,6 +309,7 @@ class RejectionTuner(TRLTrainer):
     def runGame(self):
         if self.params["clear_buffer_each_game"]:
             self.trainer_buffer.clear()
+        self.agent_buffer.clear()
 
         # self is passing the model to do forward passes with
         self.player.runGame(self, self.params['game_batch_size'])
@@ -446,7 +448,7 @@ class RejectionTuner(TRLTrainer):
                 loss=dict(policy=ce_loss, kl=kl_loss, total=loss),
                 policy=dict(entropy=entropy, approxkl=approxkl, policykl=policykl, ratio=ratio),
             )
-            train_stats.append(flatten_dict(stats))
+            train_stats.append(stats_to_np(flatten_dict(stats)))
 
         self.all_stats.extend(train_stats)
 

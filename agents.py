@@ -306,7 +306,7 @@ class VectorNLPAgent:
     """ Hugging Face Transformer Agent """
 
     GAMMA = 0.8
-    MEMORY_LEN = 0
+    MEMORY_LEN = 1
 
     def __init__(self, buffer, num_agents=1) -> None:
         self._initialized = False
