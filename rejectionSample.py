@@ -39,6 +39,7 @@ from core import (logprobs_from_logits,
                   flatten_dict,
                   average_torch_dicts,
                   stats_to_np,
+                  stats_to_cpu,
                   stack_dicts,
                   add_suffix,
                   WANDB_PADDING,
@@ -448,7 +449,7 @@ class RejectionTuner(TRLTrainer):
                 loss=dict(policy=ce_loss, kl=kl_loss, total=loss),
                 policy=dict(entropy=entropy, approxkl=approxkl, policykl=policykl, ratio=ratio),
             )
-            train_stats.append(stats_to_np(flatten_dict(stats)))
+            train_stats.append(stats_to_cpu(flatten_dict(stats)))
 
         self.all_stats.extend(train_stats)
 
@@ -462,8 +463,8 @@ class RejectionTuner(TRLTrainer):
 def train(model_name, single_game=False, NUM_AGENTS=1):
     from time import time
 
-    UPDATE_FREQUENCY = 16
-    FORWARD_BATCH = 2
+    UPDATE_FREQUENCY = 64
+    FORWARD_BATCH = 4
     LOG_FREQUENCY = 1
     SAVE_FREQUENCY = 16
     NUM_AGENTS = 4

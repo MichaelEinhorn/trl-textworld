@@ -39,6 +39,7 @@ from core import (logprobs_from_logits,
                   flatten_dict,
                   average_torch_dicts,
                   stats_to_np,
+                  stats_to_cpu,
                   stack_dicts,
                   add_suffix,
                   WANDB_PADDING,
@@ -483,7 +484,7 @@ class PPOTrainer(TRLTrainer):
             val=dict(vpred=torch.mean(vpred), error=torch.mean((vpred - returns) ** 2),
                      clipfrac=vf_clipfrac, mean=value_mean, var=value_var),
         )
-        return pg_loss, self.params['vf_coef'] * vf_loss, self.kl_ctl.value * kl_loss, stats_to_np(flatten_dict(stats))
+        return pg_loss, self.params['vf_coef'] * vf_loss, self.kl_ctl.value * kl_loss, stats_to_cpu(flatten_dict(stats))
 
 
 def train(model_name, single_game=True):
@@ -491,7 +492,7 @@ def train(model_name, single_game=True):
     from time import time
 
     UPDATE_FREQUENCY = 64
-    FORWARD_BATCH = 2
+    FORWARD_BATCH = 4
     LOG_FREQUENCY = 1
     SAVE_FREQUENCY = 16
     NUM_AGENTS = 4

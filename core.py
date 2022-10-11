@@ -94,6 +94,15 @@ def average_torch_dicts(list_of_dicts):
         average_dict[key] = torch.mean(torch.stack([d[key] for d in list_of_dicts]), axis=0)
     return average_dict
 
+def stats_to_cpu(stats_dict):
+    """Cast all torch.tensors in dict to detached cpu tensors."""
+    new_dict = dict()
+    for k, v in stats_dict.items():
+        if isinstance(v, torch.Tensor):
+            new_dict[k] = v.detach().cpu()
+        else:
+            new_dict[k] = v
+    return new_dict
 
 def stats_to_np(stats_dict):
     """Cast all torch.tensors in dict to numpy arrays."""
