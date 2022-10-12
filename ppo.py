@@ -492,7 +492,7 @@ def train(model_name, single_game=True):
     from time import time
 
     UPDATE_FREQUENCY = 64
-    FORWARD_BATCH = 4
+    FORWARD_BATCH = 2
     LOG_FREQUENCY = 1
     SAVE_FREQUENCY = 16
     NUM_AGENTS = 4
@@ -550,7 +550,7 @@ if __name__ == "__main__":
     getEnvs()
     print("generated envs")
 
-    # model_name = 'gpt2-xl'
+    # model_name = 'gpt2'
     # model_name = 'EleutherAI/gpt-j-6B'
     model_name = 'EleutherAI/gpt-neo-1.3B'
     single_game = False
