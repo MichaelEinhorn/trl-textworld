@@ -65,6 +65,9 @@ class AdaptiveKLController:
         mult = 1 + proportional_error * n_steps / self.horizon
         self.value *= mult
 
+    def updateValue(self, v):
+        self.value = v
+
 
 class FixedKLController:
     """Fixed KL controller."""
@@ -74,6 +77,9 @@ class FixedKLController:
         self.kl_list = []
 
     def update(self, current, n_steps):
+        pass
+
+    def updateValue(self, v):
         pass
 
 
@@ -158,14 +164,16 @@ class TRLTrainer(pl.LightningModule):
     # def on_train_start(self):
     #     self.runGame()
     def on_train_epoch_start(self):
-        # train on the same data epochs per game times before generating a new set
-        if self.current_epoch % self.params['epochs_per_game'] == 0:
-            game_time = time.time()
-            self.runGame()
-            self.game_time = time.time() - game_time
-            print("game time ", self.game_time)
-            
-        self.epoch_time = time.time()
+        if self.trainer.is_global_zero:
+            # train on the same data epochs per game times before generating a new set
+            if self.current_epoch % self.params['epochs_per_game'] == 0:
+                game_time = time.time()
+                self.runGame()
+                self.game_time = time.time() - game_time
+                print("game time ", self.game_time)
+
+            self.epoch_time = time.time()
+        torch.distributed.barrier()
 
     def compute_rewards(self, scores, logprobs, ref_logprobs):
         """Compute per token rewards from scores and KL-penalty."""

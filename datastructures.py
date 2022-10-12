@@ -141,14 +141,23 @@ class ReplayBuffer:
 
 
 class RLDataset(IterableDataset):
-    def __init__(self, buffer: ReplayBuffer, sample_size: int = 200):
+    def __init__(self, buffer: ReplayBuffer, sample_size: int = 200, rank=0, num_proc=1):
         self.buffer = buffer
         self.sample_size = sample_size
+        self.rank = rank
+        self.num_proc = num_proc
 
     def __iter__(self):
-        data = self.buffer.sample(self.sample_size)
+        objList = [None]
+        if self.rank == 0:
+            data = self.buffer.sample(self.sample_size)
+            objList = [data]
+
+        torch.distributed.broadcast_object_list(objList, src=0)
+        data = objList[0]
+
         scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
-        for i in range(0, len(scores)):
+        for i in range(self.rank, len(scores), self.num_proc):
             # padding matches the batches but this means padded querry + padded response is not padded (querry + response)
             model_input = torch.cat([queries[i], responses[i]])
             lengths = (queries[i].shape[0], responses[i].shape[0], model_input.shape[0])
@@ -220,14 +229,24 @@ class LineDataset(IterableDataset):
             yield lines[i]
 
 class RejectDataset(IterableDataset):
-    def __init__(self, buffer: RejectionBuffer, sample_size: int = 200):
+    def __init__(self, buffer: RejectionBuffer, sample_size: int = 200, rank=0, num_proc=1):
         self.buffer = buffer
         self.sample_size = sample_size
+        self.rank = rank
+        self.num_proc = num_proc
 
     def __iter__(self):
-        data, reject_scores = self.buffer.sample(self.sample_size)
+        objList = [None, None]
+        if self.rank == 0:
+            data, reject_scores = self.buffer.sample(self.sample_size)
+            objList = [data, reject_scores]
+
+        torch.distributed.broadcast_object_list(objList, src=0)
+        data = objList[0]
+        reject_scores = objList[1]
+
         scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
-        for i in range(0, len(scores)):
+        for i in range(self.rank, len(scores), self.num_proc):
             # padding matches the batches but this means padded querry + padded response is not padded (querry + response)
             model_input = torch.cat([queries[i], responses[i]])
             lengths = (queries[i].shape[0], responses[i].shape[0], model_input.shape[0])
