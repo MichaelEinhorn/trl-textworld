@@ -96,6 +96,12 @@ class TRLTrainer(pl.LightningModule):
             self.ref_model = GPT2LMHeadModel.from_pretrained(model_name)
             self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
             self.tokenizer.pad_token = self.tokenizer.unk_token
+        elif 'gpt-neox' in model_name:
+            from transformers import GPTNeoXForCausalLM, GPTNeoXTokenizerFast
+            self.model = GPTNeoXForCausalLM.from_pretrained(model_name)
+            self.ref_model = GPTNeoXForCausalLM.from_pretrained(model_name)
+            self.tokenizer = GPTNeoXTokenizerFast.from_pretrained(model_name)
+            self.tokenizer.pad_token = self.tokenizer.unk_token
         elif 'gpt-j' in model_name:
             from transformers import GPT2Tokenizer, GPTJForCausalLM
             self.model = GPTJForCausalLM.from_pretrained(model_name)

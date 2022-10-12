@@ -505,7 +505,7 @@ def train(model_name, single_game=False, NUM_AGENTS=1):
     trainer = pl.Trainer(
         enable_checkpointing=False,
         logger=False,
-        accelerator='gpu', devices=1,
+        accelerator='gpu', devices=8,
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(
@@ -523,7 +523,8 @@ if __name__ == "__main__":
 
     # model_name = 'gpt2-xl'
     # model_name = 'EleutherAI/gpt-j-6B'
-    model_name = 'EleutherAI/gpt-neo-1.3B'
+    # model_name = 'EleutherAI/gpt-neo-1.3B'
+    model_name = "EleutherAI/gpt-neox-20b"
     single_game = False
 
     Path("stats").mkdir(parents=True, exist_ok=True)
