@@ -318,7 +318,7 @@ class VectorNLPAgent:
 
         self.mode = "test"
         self.transitions = [[] for i in range(self.num_agents)]
-        self.clearTextWorldArt = [True for i in range(self.num_agents)]
+        # self.clearTextWorldArt = [True for i in range(self.num_agents)]
 
         # PPO trainer uses next values to get a value across transitions
         self.returnNextValues = True
@@ -336,13 +336,13 @@ class VectorNLPAgent:
         # self.model.reset_hidden(1)
         self.last_score = [0 for i in range(self.num_agents)]
         self.no_train_step = [0 for i in range(self.num_agents)]
-        self.clearTextWorldArt = [True for i in range(self.num_agents)]
+        # self.clearTextWorldArt = [True for i in range(self.num_agents)]
 
         for mem in self.memory:
             mem.clear()
 
     def test(self):
-        self.clearTextWorldArt = [True for i in range(self.num_agents)]
+        # self.clearTextWorldArt = [True for i in range(self.num_agents)]
         self.mode = "test"
 
     @property
@@ -412,7 +412,7 @@ class VectorNLPAgent:
                 if done[i]:
                     self.last_score[i] = 0  # Will be starting a new episode. Reset the last score.
                     self.memory[i].clear()
-                    self.clearTextWorldArt[i] = True
+                    # self.clearTextWorldArt[i] = True
                     # mark last transition of episode
                     if len(self.transitions[i]) != 0:
                         self.transitions[i][-1][4] = True
@@ -425,8 +425,9 @@ class VectorNLPAgent:
         # infos is dict of lists
         for i in range(self.num_agents):
             obs = observation[i]
-            if self.clearTextWorldArt[i]:
-                self.clearTextWorldArt[i] = False
+            # if self.clearTextWorldArt[i]:
+            if True:
+                # self.clearTextWorldArt[i] = False
                 if "Welcome to TextWorld!" in obs:
                     obs = obs[obs.index("Welcome to TextWorld!"):]
                 elif "$$$$$$$" in obs:

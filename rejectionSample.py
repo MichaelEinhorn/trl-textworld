@@ -366,22 +366,6 @@ class RejectionTuner(TRLTrainer):
         print("rejection ", start_n, " ", reject_n)
         self.rejectRatio = torch.tensor(reject_n / start_n)
 
-    def compute_rewards(self, scores, logprobs, ref_logprobs):
-        """Compute per token rewards from scores and KL-penalty."""
-        rewards, non_score_rewards = [], []
-        for score, logprob, ref_logprob in zip(scores, logprobs, ref_logprobs):
-            logprob = logprob.to(self.device)
-            ref_logprob = ref_logprob.to(self.device)
-            kl = logprob - ref_logprob
-            # for stats and adaptive update
-            self.kl_ctl_rew.kl_list.append(kl.detach().to("cpu"))
-            non_score_reward = -self.kl_ctl_rew.value * kl
-            non_score_rewards.append(non_score_reward)
-            reward = non_score_reward.clone()
-            reward[-1] += score
-            rewards.append(reward)
-        return rewards, non_score_rewards
-
     # data is list of strings
     def training_step(self, batch, nb_batch):
         scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, old_logprobs, ref_logprobs, values, rewards, non_score_reward, reject_scores = batch
@@ -464,7 +448,7 @@ def train(model_name, single_game=False, NUM_AGENTS=1):
     from time import time
 
     UPDATE_FREQUENCY = 64
-    FORWARD_BATCH = 4
+    FORWARD_BATCH = 2
     LOG_FREQUENCY = 1
     SAVE_FREQUENCY = 16
     NUM_AGENTS = 4
@@ -487,7 +471,8 @@ def train(model_name, single_game=False, NUM_AGENTS=1):
     params = {'batch_size': UPDATE_FREQUENCY // 2,
               'game_batch_size': UPDATE_FREQUENCY,
              'save_freq': SAVE_FREQUENCY,
-             'log_freq': LOG_FREQUENCY}
+             'log_freq': LOG_FREQUENCY,
+             "forward_batch_size": FORWARD_BATCH}
     reject_tuner = RejectionTuner(model_name, player, buffer, agent, **params)
 
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
@@ -521,7 +506,7 @@ if __name__ == "__main__":
     getEnvs()
     print("generated envs")
 
-    # model_name = 'gpt2-xl'
+    # model_name = 'gpt2'
     # model_name = 'EleutherAI/gpt-j-6B'
     # model_name = 'EleutherAI/gpt-neo-1.3B'
     model_name = "EleutherAI/gpt-neox-20b"

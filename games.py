@@ -138,6 +138,8 @@ class VectorPlayer:
         self.nb_moves = 0
         self.no_episode = 0
         self.done = True
+        
+        self.resetEnv()
 
     def resetEnv(self):
         self.obs, self.infos = self.env.reset()  # Start new episode.
@@ -147,14 +149,13 @@ class VectorPlayer:
         self.nb_moves = 0
 
     def runGame(self, lightmodel, steps=10):
-        print("running game for " + str(steps))
-        self.resetEnv()
-
+        print("\n" + "running game for " + str(steps) + " steps")
         exTurnSampler = None
         if self.exTurns is not None:
             exTurnSampler = torch.distributions.bernoulli.Bernoulli(probs=self.exTurns)
-        
+        total_steps = steps
         while steps > 0:
+            print("\r", total_steps - steps, "/", total_steps, sep="", end="", flush=True)
             stepsCompleted = self.num_agents
 
             if self.exTurns is not None:
@@ -166,10 +167,7 @@ class VectorPlayer:
                 command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel)
 
             self.obs, self.score, self.done, self.infos = self.env.step(command)
-            if hasattr(self.agent, 'reportScore'):
-                self.agent.reportScore(self.score, self.done, self.infos)
-            self.nb_moves += 1
-
+            
             if True in self.done:
                 self.no_episode += 1
 
@@ -179,7 +177,15 @@ class VectorPlayer:
                 # self.avg_norm_scores.append(self.score / self.infos["max_score"])
 
             steps -= stepsCompleted
+            
+            # if steps <= 0:
+                
+            if hasattr(self.agent, 'reportScore'):
+                self.agent.reportScore(self.score, self.done, self.infos)
+            self.nb_moves += 1
+        print("\r", total_steps - steps, "/", total_steps, sep="", flush=True)
 
+            
     def close(self):
         self.env.close()
         if self.verbose:

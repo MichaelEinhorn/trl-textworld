@@ -170,17 +170,18 @@ class TRLTrainer(pl.LightningModule):
     def compute_rewards(self, scores, logprobs, ref_logprobs):
         """Compute per token rewards from scores and KL-penalty."""
         rewards, non_score_rewards = [], []
-        for score, logprob, ref_logprob in zip(scores, logprobs, ref_logprobs):
-            logprob = logprob.to(self.device)
-            ref_logprob = ref_logprob.to(self.device)
-            kl = logprob - ref_logprob
-            # for stats and adaptive update
-            self.kl_ctl_rew.kl_list.append(kl.detach().to("cpu"))
-            non_score_reward = -self.kl_ctl_rew.value * kl
-            non_score_rewards.append(non_score_reward)
-            reward = non_score_reward.clone()
-            reward[-1] += score
-            rewards.append(reward)
+        with torch.no_grad():
+            for score, logprob, ref_logprob in zip(scores, logprobs, ref_logprobs):
+                logprob = logprob.to(self.device)
+                ref_logprob = ref_logprob.to(self.device)
+                kl = logprob - ref_logprob
+                # for stats and adaptive update
+                self.kl_ctl_rew.kl_list.append(kl.detach().to("cpu"))
+                non_score_reward = -self.kl_ctl_rew.value * kl
+                non_score_rewards.append(non_score_reward)
+                reward = non_score_reward.clone()
+                reward[-1] += score
+                rewards.append(reward)
         return rewards, non_score_rewards
 
     def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False, attention_mask=None, outputLogits=True):
