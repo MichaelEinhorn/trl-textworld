@@ -455,7 +455,7 @@ def train(model_name, single_game=False, NUM_AGENTS=1):
     trainer = pl.Trainer(
         enable_checkpointing=False,
         logger=False,
-        accelerator='gpu', devices=8,
+        accelerator='gpu', devices=2,
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(
@@ -469,8 +469,10 @@ def train(model_name, single_game=False, NUM_AGENTS=1):
     NUM_AGENTS = max(NUM_AGENTS // trainer.world_size, 1)
 
     if trainer.is_global_zero:
-        print("Params per thread: update freq ", UPDATE_FREQUENCY, " forward batch ", FORWARD_BATCH, " num agents ",
-              NUM_AGENTS)
+        print("Params per thread: update freq ", UPDATE_FREQUENCY, " forward batch ", FORWARD_BATCH, " num agents ", NUM_AGENTS)
+        getEnvs()
+        print("generated envs")
+    torch.distributed.barrier()
 
     buffer = ReplayBuffer(UPDATE_FREQUENCY)
 
@@ -504,13 +506,10 @@ def train(model_name, single_game=False, NUM_AGENTS=1):
 if __name__ == "__main__":
     import argparse
 
-    getEnvs()
-    print("generated envs")
-
     # model_name = 'gpt2'
-    # model_name = 'EleutherAI/gpt-j-6B'
+    model_name = 'EleutherAI/gpt-j-6B'
     # model_name = 'EleutherAI/gpt-neo-1.3B'
-    model_name = "EleutherAI/gpt-neox-20b"
+    # model_name = "EleutherAI/gpt-neox-20b"
     single_game = False
 
     Path("stats").mkdir(parents=True, exist_ok=True)

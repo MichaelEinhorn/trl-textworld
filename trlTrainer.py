@@ -27,6 +27,7 @@ from torchinfo import summary
 
 from valueHead import ValueHead
 from games import VectorPlayer, getEnvs
+from agents import NLPAgent, VectorNLPAgent
 
 from transformers import DataCollatorForLanguageModeling
 from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
@@ -84,16 +85,12 @@ class FixedKLController:
 
 
 class TRLTrainer(pl.LightningModule):
-    def __init__(self, model_name, player, buffer, agent, **params):
+    def __init__(self, model_name, **params):
         super().__init__()
 
         self.params = self.default_params
         self.params.update(params)
         self.alg_name = self.params["alg_name"]
-
-        self.agent_buffer = buffer
-
-        self.player = player
 
         # gpt2 and gpt2-xl
         if 'gpt2' in model_name:
@@ -124,8 +121,6 @@ class TRLTrainer(pl.LightningModule):
         print(self.model.config.torch_dtype)
         summary(self.model)
         self.config = self.model.config
-
-        self.agent = agent
 
         self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
 
@@ -161,8 +156,31 @@ class TRLTrainer(pl.LightningModule):
             return config.get('offload_optimizer') or config.get('offload_param')
         return False
 
-    # def on_train_start(self):
-    #     self.runGame()
+    def on_fit_start(self):
+        if self.trainer.is_global_zero:
+            getEnvs()
+            print("generated envs")
+        torch.distributed.barrier()
+        
+        if self.params["single_game"]:
+            # agent = NLPAgent(buffer, humanTurns=0)
+            self.agent = VectorNLPAgent(self.agemt_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
+                                   world_size=self.trainer.world_size)
+            print("Training")
+            self.agent.train()  # Tell the agent it should update its parameters.
+            # player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
+            self.player = VectorPlayer(self.agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False,
+                                  num_agents=self.params["num_agents"],
+                                  exTurns=0.25, rank=self.trainer.global_rank, world_size=self.trainer.world_size)
+
+        else:
+            self.agent = VectorNLPAgent(self.agemt_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
+                                   world_size=self.trainer.world_size)
+            print("Training on 100 games")
+            self.agent.train()  # Tell the agent it should update its parameters.
+            self.player = VectorPlayer(self.agent, "./training_games/", verbose=False, num_agents=self.params["num_agents"], exTurns=0.25,
+                                  rank=self.trainer.global_rank, world_size=self.trainer.world_size)  # Each game will be seen 5 times.
+    
     def on_train_epoch_start(self):
         # train on the same data epochs per game times before generating a new set
         if self.current_epoch % self.params['epochs_per_game'] == 0:

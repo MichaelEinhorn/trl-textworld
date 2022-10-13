@@ -27,6 +27,7 @@ from torchinfo import summary
 
 from valueHead import ValueHead
 from games import VectorPlayer, getEnvs, Player
+from agents import NLPAgent, VectorNLPAgent
 
 from transformers import DataCollatorForLanguageModeling
 
@@ -74,12 +75,14 @@ class PPOTrainer(TRLTrainer):
         "epochs_per_game": 4,
     }
 
-    def __init__(self, model_name, player, buffer, agent, **params):
-        super().__init__(model_name, player, buffer, agent, **params)
+    def __init__(self, model_name, **params):
+        super().__init__(model_name, **params)
         self.config.num_labels = 1
         self.valueHead = ValueHead(self.config)
 
         self.trainer_buffer = None
+        
+        self.agemt_buffer = ReplayBuffer(self.params["batch_size"])
 
 
     def on_train_epoch_end(self):
@@ -485,7 +488,6 @@ class PPOTrainer(TRLTrainer):
 
 
 def train(model_name, single_game=True):
-    from agents import NLPAgent, VectorNLPAgent
     from time import time
 
     UPDATE_FREQUENCY = 64
@@ -498,7 +500,7 @@ def train(model_name, single_game=True):
     trainer = pl.Trainer(
         enable_checkpointing=False,
         logger=False,
-        accelerator='gpu', devices=8,
+        accelerator='gpu', devices=2,
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(
@@ -513,46 +515,8 @@ def train(model_name, single_game=True):
     if trainer.is_global_zero:
         print("Params per thread: update freq ", UPDATE_FREQUENCY, " forward batch ", FORWARD_BATCH, " num agents ", NUM_AGENTS)
 
-    player = None
-    buffer = None
-    agent = None
-
-    buffer = ReplayBuffer(UPDATE_FREQUENCY)
-    if single_game:
-        # agent = NLPAgent(buffer, humanTurns=0)
-        agent = VectorNLPAgent(buffer, num_agents=NUM_AGENTS, rank=trainer.global_rank, world_size=trainer.world_size)
-        print("Training")
-        agent.train()  # Tell the agent it should update its parameters.
-        # player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
-        player = VectorPlayer(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False, num_agents=NUM_AGENTS, exTurns=0.25,
-                              rank=trainer.global_rank, world_size=trainer.world_size)
-
-    else:
-        agent = VectorNLPAgent(buffer, num_agents=NUM_AGENTS, rank=trainer.global_rank, world_size=trainer.world_size)
-        print("Training on 100 games")
-        agent.train()  # Tell the agent it should update its parameters.
-        player = VectorPlayer(agent, "./training_games/", verbose=False, num_agents=NUM_AGENTS, exTurns=0.25,
-                              rank=trainer.global_rank, world_size=trainer.world_size)  # Each game will be seen 5 times.
-
-        getEnvs()
-        print("generated envs")
-
-    ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': FORWARD_BATCH, "log_freq": LOG_FREQUENCY, "save_freq": SAVE_FREQUENCY}
-    ppo_trainer = PPOTrainer(model_name, player, buffer, agent, **ppo_config)
-
-
-    # trainer = pl.Trainer(
-    #     logger=False,
-    #     accelerator='gpu', devices=1,
-    #     max_epochs=500,
-    #     precision=16,
-    #     strategy=DeepSpeedStrategy(
-    #         stage=3,
-    #         offload_optimizer=True,
-    #         offload_parameters=False,
-    #         ),
-    #     )
-
+    ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': FORWARD_BATCH, "log_freq": LOG_FREQUENCY, "save_freq": SAVE_FREQUENCY, "num_agents": NUM_AGENTS, "single_game": single_game}
+    ppo_trainer = PPOTrainer(model_name, **ppo_config)
 
     trainer.fit(ppo_trainer)
 
@@ -561,9 +525,9 @@ if __name__ == "__main__":
     import argparse
 
     # model_name = 'gpt2'
-    # model_name = 'EleutherAI/gpt-j-6B'
+    model_name = 'EleutherAI/gpt-j-6B'
     # model_name = 'EleutherAI/gpt-neo-1.3B'
-    model_name = "EleutherAI/gpt-neox-20b"
+    # model_name = "EleutherAI/gpt-neox-20b"
     single_game = False
     
     Path("stats").mkdir(parents=True, exist_ok=True)
