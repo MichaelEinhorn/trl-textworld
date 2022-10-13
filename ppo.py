@@ -80,14 +80,12 @@ class PPOTrainer(TRLTrainer):
         self.valueHead = ValueHead(self.config)
 
         self.trainer_buffer = None
-        if self.trainer.is_global_zero:
-            self.trainer_buffer = LineBuffer(self.params['batch_size'])
 
 
     def on_train_epoch_end(self):
         for ctl in [self.kl_ctl, self.kl_ctl_rew]:
             if self.trainer.is_global_zero:
-                gathered_kl = [None for i in range(self.trainer.num_devices)]
+                gathered_kl = [None for i in range(self.trainer.world_size)]
             else:
                 gathered_kl = None
             torch.distributed.gather_object(ctl.kl_list, object_gather_list=gathered_kl, dst=0)
@@ -197,7 +195,9 @@ class PPOTrainer(TRLTrainer):
         return [optimizer]
 
     def __dataloader(self) -> DataLoader:
-        dataset = RLDataset(self.trainer_buffer, self.params['batch_size'], rank=self.trainer.global_rank, num_proc=self.trainer.num_devices)
+        self.trainer_buffer = LineBuffer(self.params['batch_size'])
+        dataset = RLDataset(self.trainer_buffer, self.params['batch_size'],
+                            rank=self.trainer.global_rank, world_size=self.trainer.world_size)
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=self.params['forward_batch_size'],
                                 collate_fn=RLDatasetCollator(text_collator=self.data_collator)
@@ -354,7 +354,7 @@ class PPOTrainer(TRLTrainer):
                                                  values_next=values_next, ref_logprobs=ref_logprobs)
 
         if self.trainer.is_global_zero:
-            gathered_stats = [None for i in range(self.trainer.num_devices)]
+            gathered_stats = [None for i in range(self.trainer.world_size)]
         else:
             gathered_stats = None
         torch.distributed.gather_object(train_stats, object_gather_list=gathered_stats, dst=0)
@@ -505,26 +505,34 @@ def train(model_name, single_game=True):
             config="ds_config_zero3_light.json"
         ),
     )
+    print("rank out of world :", trainer.global_rank, " " , trainer.world_size)
+    UPDATE_FREQUENCY = max(UPDATE_FREQUENCY // trainer.world_size, 1)
+    FORWARD_BATCH = max(FORWARD_BATCH // trainer.world_size, 1)
+    NUM_AGENTS = max(NUM_AGENTS // trainer.world_size, 1)
+
+    if trainer.is_global_zero:
+        print("Params per thread: update freq ", UPDATE_FREQUENCY, " forward batch ", FORWARD_BATCH, " num agents ", NUM_AGENTS)
 
     player = None
     buffer = None
     agent = None
 
-    if trainer.is_global_zero:
-        buffer = ReplayBuffer(UPDATE_FREQUENCY)
-        if single_game:
-            # agent = NLPAgent(buffer, humanTurns=0)
-            agent = VectorNLPAgent(buffer, num_agents=NUM_AGENTS)
-            print("Training")
-            agent.train()  # Tell the agent it should update its parameters.
-            # player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
-            player = VectorPlayer(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False, num_agents=NUM_AGENTS, exTurns=0.25)
+    buffer = ReplayBuffer(UPDATE_FREQUENCY)
+    if single_game:
+        # agent = NLPAgent(buffer, humanTurns=0)
+        agent = VectorNLPAgent(buffer, num_agents=NUM_AGENTS, rank=trainer.global_rank, world_size=trainer.world_size)
+        print("Training")
+        agent.train()  # Tell the agent it should update its parameters.
+        # player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
+        player = VectorPlayer(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False, num_agents=NUM_AGENTS, exTurns=0.25,
+                              rank=trainer.global_rank, world_size=trainer.world_size)
 
-        else:
-            agent = VectorNLPAgent(buffer, num_agents=NUM_AGENTS)
-            print("Training on 100 games")
-            agent.train()  # Tell the agent it should update its parameters.
-            player = VectorPlayer(agent, "./training_games/", verbose=False, num_agents=NUM_AGENTS, exTurns=0.25)  # Each game will be seen 5 times.
+    else:
+        agent = VectorNLPAgent(buffer, num_agents=NUM_AGENTS, rank=trainer.global_rank, world_size=trainer.world_size)
+        print("Training on 100 games")
+        agent.train()  # Tell the agent it should update its parameters.
+        player = VectorPlayer(agent, "./training_games/", verbose=False, num_agents=NUM_AGENTS, exTurns=0.25,
+                              rank=trainer.global_rank, world_size=trainer.world_size)  # Each game will be seen 5 times.
 
         getEnvs()
         print("generated envs")

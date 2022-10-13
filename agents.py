@@ -26,8 +26,8 @@ def clean_str(s):
     s = re.sub(f'[^{allowed_chars}]', '', s)
     return s
 
-def printFile(s, i, epoch):
-        with open(f"trajectories/epoch_{epoch}_agent_{i}.txt", "a") as myfile:
+def printFile(s, i, epoch, rank, world_size):
+        with open(f"trajectories/epoch_{epoch}_agent_{i + rank * world_size}.txt", "a") as myfile:
             myfile.write(s + "\n")
 
 class RandomAgent(textworld.gym.Agent):
@@ -67,7 +67,7 @@ class NLPAgent:
     GAMMA = 0.5
     MEMORY_LEN = 3
 
-    def __init__(self, buffer, humanTurns=0) -> None:
+    def __init__(self, buffer, humanTurns=0, rank=0, world_size=1) -> None:
         self._initialized = False
         self._epsiode_has_started = False
 
@@ -87,6 +87,9 @@ class NLPAgent:
         self.testCountLetters = ('e', 'E') # None
         
         self.rewValStat = []
+
+        self.rank = rank
+        self.world_size = world_size
 
     def train(self):
         self.mode = "train"
@@ -308,7 +311,7 @@ class VectorNLPAgent:
     GAMMA = 0.8
     MEMORY_LEN = 1
 
-    def __init__(self, buffer, num_agents=1) -> None:
+    def __init__(self, buffer, num_agents=1, rank=0, world_size=1) -> None:
         self._initialized = False
         self._epsiode_has_started = False
         self.num_agents = num_agents
@@ -328,6 +331,9 @@ class VectorNLPAgent:
         self.rewValStat = []
         
         Path("trajectories").mkdir(parents=True, exist_ok=True)
+
+        self.rank = rank
+        self.world_size = world_size
 
     def train(self):
         self.mode = "train"
@@ -449,13 +455,13 @@ class VectorNLPAgent:
                 # prompt = "hello"
                 # if i == 0:
                 #     print(prompt)
-                printFile(input_, i, epoch)
+                printFile(input_, i, epoch, self.rank, self.world_size)
 
             if self.testCountLetters is None:
                 # if i == 0:
                 #     # print("prompt tokens: ", input_ids.shape)
                 #     print(input_)
-                printFile(input_, i, epoch)
+                printFile(input_, i, epoch, self.rank, self.world_size)
 
             promptList.append(prompt)
             inputList.append(input_)
@@ -470,8 +476,8 @@ class VectorNLPAgent:
                     action = commands[idx]
                     input_ = inputList[i]
                     self.memory[i].append(input_ + action)
-                    printFile("example turn", i, epoch)
-                    printFile(action, i, epoch)
+                    printFile("example turn", i, epoch, self.rank, self.world_size)
+                    printFile(action, i, epoch, self.rank, self.world_size)
                     actionList.append(action)
                 return actionList
 
@@ -550,8 +556,8 @@ class VectorNLPAgent:
             end = torch.arange(att.shape[0], device=lightmodel.getDevice())
             end = torch.argmax(end * att)
             # print("att ", i, att, start, end, genLengths[i])
-            printFile("genlen, start, end", i, epoch)
-            printFile(str(genLengths[i]) + ", " + str(start) + ", "  + str(end), i, epoch)
+            # printFile("genlen, start, end", i, epoch)
+            # printFile(str(genLengths[i]) + ", " + str(start) + ", "  + str(end), i, epoch)
 
             inp = inp[:, start:end+1]
             action_tens = inp[:, -genLengths[i]:]
@@ -567,9 +573,9 @@ class VectorNLPAgent:
             # if i == 0:
             #     print("action")
             #     print(action)
-            printFile(clean_str(action), i, epoch)
+            printFile(clean_str(action), i, epoch, self.rank, self.world_size)
             if action != clean_str(action):
-                printFile("uncleaned action: " + action, i, epoch)
+                printFile("uncleaned action: " + action, i, epoch, self.rank, self.world_size)
 
             # doesn't need shifting since input ids is already 1 longer than values
             val = values[i:i+1, :genLengths[i]]
@@ -578,7 +584,7 @@ class VectorNLPAgent:
             # if i == 0:
             #     print("first value in action", first_value)
             #     # print(value)
-            printFile("first value in action " + str(first_value), i, epoch)
+            printFile("first value in action " + str(first_value), i, epoch, self.rank, self.world_size)
             # only grab last token
             # value = values[i, genLengths[i] - 1, 0]
 
@@ -595,7 +601,7 @@ class VectorNLPAgent:
                     reward = torch.tensor(count, dtype=first_value.dtype)
                     # if i == 0:
                     #     print("reward", reward)
-                    printFile("reward " + str(reward), i, epoch)
+                    printFile("reward " + str(reward), i, epoch, self.rank, self.world_size)
                     self.rewValStat.append([lightmodel.current_epoch, reward, first_value.detach().cpu().numpy()])
 
                 if not self.returnNextValues:

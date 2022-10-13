@@ -78,7 +78,7 @@ class RejectionTuner(TRLTrainer):
 
     def __init__(self, model_name, player, buffer, agent, **params):
         super().__init__(model_name, player, buffer, agent, **params)
-        self.trainer_buffer = RejectionBuffer(min=False)
+        self.trainer_buffer = RejectionBuffer(min=False, rank=self.trainer.global_rank, world_size=self.trainer.world_size)
         self.rejectRatio = 0
 
     def getDevice(self):
@@ -88,7 +88,7 @@ class RejectionTuner(TRLTrainer):
         return self.forward(input_ids, **kwargs)
     
     def __dataloader(self) -> DataLoader:
-        dataset = RejectDataset(self.trainer_buffer, self.params['batch_size'])
+        dataset = RejectDataset(self.trainer_buffer, self.params['batch_size'], rank=self.trainer.global_rank, world_size=self.trainer.world_size)
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=self.params['forward_batch_size'],
                                 collate_fn=RejectDatasetCollator(text_collator=self.data_collator)
@@ -237,46 +237,65 @@ class RejectionTuner(TRLTrainer):
         return output
 
     def on_train_epoch_end(self):
-        if self.current_epoch % self.params['save_freq'] == 0:
-            t = time.time()
-            self.model.save_pretrained(f"checkpoints/{self.alg_name}_model_epoch_{self.current_epoch}")
-            self.saveModelTime = time.time() - t
+        for ctl in [self.kl_ctl, self.kl_ctl_rew]:
+            if self.trainer.is_global_zero:
+                gathered_kl = [None for i in range(self.trainer.world_size)]
+            else:
+                gathered_kl = None
+            torch.distributed.gather_object(ctl.kl_list, object_gather_list=gathered_kl, dst=0)
+            ctl.kl_list = []
+            if self.trainer.is_global_zero:
+                for kl in gathered_kl:
+                    ctl.kl_list.extend(kl)
 
-        if self.current_epoch % self.params['log_freq'] == 0:
-            data, scores_kl = self.trainer_buffer.sample(self.params['batch_size'])
-            scores, _, _, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
+        if self.trainer.is_global_zero:
+            if self.current_epoch % self.params['save_freq'] == 0:
+                t = time.time()
+                self.model.save_pretrained(f"checkpoints/{self.alg_name}_model_epoch_{self.current_epoch}")
+                self.saveModelTime = time.time() - t
 
-            timing = dict()
-            timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
-            timing[f'time/{self.alg_name}/game_time'] = self.game_time
-            
-            timing['time/filesystem/save_model'] = self.saveModelTime
-            timing['time/filesystem/save_stats'] = self.saveStatTime
+            if self.current_epoch % self.params['log_freq'] == 0:
+                data, scores_kl = self.trainer_buffer.sample(self.params['batch_size'])
+                scores, _, _, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
 
-            t = time.time()
-            train_stats = stack_dicts(self.all_stats)
-            self.all_stats = []
+                timing = dict()
+                timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
+                timing[f'time/{self.alg_name}/game_time'] = self.game_time
 
-            train_stats['rejectRatio'] = self.rejectRatio
-            train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
+                timing['time/filesystem/save_model'] = self.saveModelTime
+                timing['time/filesystem/save_stats'] = self.saveStatTime
 
-            # print("kl list ", len(self.kl_ctl_rew.kl_list))
-            stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
-                                           non_score_reward=non_score_reward, train_stats=train_stats)
-            stats = stats_to_np(stats)
-            timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
+                t = time.time()
+                train_stats = stack_dicts(self.all_stats)
+                self.all_stats = []
 
-            self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
-            self.kl_ctl_rew.update(stats['objective/kl_rew'],
-                                   self.params['log_freq'] * self.params['batch_size'] // self.params[
-                                       f'epochs_per_game'])
+                train_stats['rejectRatio'] = self.rejectRatio
+                train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
 
-            # timing[f'time/{self.alg_name}/total'] = time.time() - t0
-            stats.update(timing)
-            # print(stats)
-            t = time.time()
-            torch.save(stats, f"stats/{self.alg_name}_epoch_{self.current_epoch}-step_{self.global_step}.pt")
-            self.saveStatTime = time.time() - t
+                # print("kl list ", len(self.kl_ctl_rew.kl_list))
+                stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
+                                               non_score_reward=non_score_reward, train_stats=train_stats)
+                stats = stats_to_np(stats)
+                timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
+
+                self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
+                self.kl_ctl_rew.update(stats['objective/kl_rew'],
+                                       self.params['log_freq'] * self.params['batch_size'] // self.params[
+                                           f'epochs_per_game'])
+
+                # timing[f'time/{self.alg_name}/total'] = time.time() - t0
+                stats.update(timing)
+                # print(stats)
+                t = time.time()
+                torch.save(stats, f"stats/{self.alg_name}_epoch_{self.current_epoch}-step_{self.global_step}.pt")
+                self.saveStatTime = time.time() - t
+
+        # stats are computed on process 1, update kl ctls on all processes
+        kl_values = [self.kl_ctl.value, self.kl_ctl_rew.value]
+        torch.distributed.broadcast_object_list(kl_values, src=0)
+        if not self.trainer.is_global_zero:
+            self.kl_ctl.updateValue(kl_values[0])
+            self.kl_ctl_rew.updateValue(kl_values[1])
 
     def runGame(self):
         if self.params["clear_buffer_each_game"]:
@@ -332,10 +351,11 @@ class RejectionTuner(TRLTrainer):
             self.trainer_buffer.append(lineItem, score_kl)
 
         start_n = len(self.trainer_buffer)
-        self.trainer_buffer.reject(self.params["batch_size"], threshType="top n")
+        self.trainer_buffer.reject(self.params["batch_size"] * self.trainer.world_size, threshType="top n")
         reject_n = len(self.trainer_buffer)
-        print("rejection ", start_n, " ", reject_n)
-        self.rejectRatio = torch.tensor(reject_n / start_n)
+        if self.trainer.is_global_zero:
+            print("rejection ", start_n, " ", reject_n)
+            self.rejectRatio = torch.tensor(reject_n / start_n)
 
     # data is list of strings
     def training_step(self, batch, nb_batch):
@@ -406,11 +426,18 @@ class RejectionTuner(TRLTrainer):
             )
             train_stats.append(stats_to_cpu(flatten_dict(stats)))
 
-        self.all_stats.extend(train_stats)
+        if self.trainer.is_global_zero:
+            gathered_stats = [None for i in range(self.trainer.world_size)]
+        else:
+            gathered_stats = None
+        torch.distributed.gather_object(train_stats, object_gather_list=gathered_stats, dst=0)
+        if self.trainer.is_global_zero:
+            for stats in gathered_stats:
+                self.all_stats.extend(stats)
 
         kl_loss_batch /= fbs
         if self.params["train_generation"]:
-            ce_loss /= fbs
+            ce_loss_batch /= fbs
 
         return ce_loss_batch + self.kl_ctl.value * kl_loss_batch
 
@@ -424,40 +451,7 @@ def train(model_name, single_game=False, NUM_AGENTS=1):
     SAVE_FREQUENCY = 16
     NUM_AGENTS = 4
 
-    buffer = ReplayBuffer(UPDATE_FREQUENCY)
-
-    if single_game:
-        agent = NLPAgent(buffer, humanTurns=0)
-        print("Training")
-        agent.train()  # Tell the agent it should update its parameters.
-        player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
-
-    else:
-        agent = VectorNLPAgent(buffer, num_agents=NUM_AGENTS)
-        print("Training on 100 games")
-        agent.train()  # Tell the agent it should update its parameters.
-        player = VectorPlayer(agent, "./training_games/", verbose=False, num_agents=NUM_AGENTS,
-                              exTurns=0.25)  # Each game will be seen 5 times.
-
-    params = {'batch_size': UPDATE_FREQUENCY // 2,
-              'game_batch_size': UPDATE_FREQUENCY,
-             'save_freq': SAVE_FREQUENCY,
-             'log_freq': LOG_FREQUENCY,
-             "forward_batch_size": FORWARD_BATCH}
-    reject_tuner = RejectionTuner(model_name, player, buffer, agent, **params)
-
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
-    # trainer = pl.Trainer(
-    #     logger=False,
-    #     accelerator='gpu', devices=1,
-    #     max_epochs=500,
-    #     precision=16,
-    #     strategy=DeepSpeedStrategy(
-    #         stage=3,
-    #         offload_optimizer=True,
-    #         offload_parameters=False,
-    #         ),
-    #     )
     trainer = pl.Trainer(
         enable_checkpointing=False,
         logger=False,
@@ -468,6 +462,42 @@ def train(model_name, single_game=False, NUM_AGENTS=1):
             config="ds_config_zero3_light.json"
         ),
     )
+
+    print("rank out of world :", trainer.global_rank, " ", trainer.world_size)
+    UPDATE_FREQUENCY = max(UPDATE_FREQUENCY // trainer.world_size, 2)
+    FORWARD_BATCH = max(FORWARD_BATCH // trainer.world_size, 1)
+    NUM_AGENTS = max(NUM_AGENTS // trainer.world_size, 1)
+
+    if trainer.is_global_zero:
+        print("Params per thread: update freq ", UPDATE_FREQUENCY, " forward batch ", FORWARD_BATCH, " num agents ",
+              NUM_AGENTS)
+
+    buffer = ReplayBuffer(UPDATE_FREQUENCY)
+
+    if single_game:
+        agent = NLPAgent(buffer, humanTurns=0,
+                         rank=trainer.global_rank, world_size=trainer.world_size)
+        print("Training")
+        agent.train()  # Tell the agent it should update its parameters.
+        player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False,
+                                rank=trainer.global_rank, world_size=trainer.world_size) # Dense rewards game.
+
+    else:
+        agent = VectorNLPAgent(buffer, num_agents=NUM_AGENTS,
+                               rank=trainer.global_rank, world_size=trainer.world_size)
+        print("Training on 100 games")
+        agent.train()  # Tell the agent it should update its parameters.
+        player = VectorPlayer(agent, "./training_games/", verbose=False, num_agents=NUM_AGENTS, exTurns=0.25,
+                              rank=trainer.global_rank, world_size=trainer.world_size) # Each game will be seen 5 times.
+
+    params = {'batch_size': UPDATE_FREQUENCY // 2,
+              'game_batch_size': UPDATE_FREQUENCY,
+             'save_freq': SAVE_FREQUENCY,
+             'log_freq': LOG_FREQUENCY,
+             "forward_batch_size": FORWARD_BATCH}
+    reject_tuner = RejectionTuner(model_name, player, buffer, agent, **params)
+
+
     trainer.fit(reject_tuner)
 
 
