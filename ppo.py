@@ -22,6 +22,7 @@ from typing import Tuple, List
 import torch.optim as optim
 from torch.optim import Optimizer
 from deepspeed.ops.adam import DeepSpeedCPUAdam
+from deepspeed.ops.adam import FusedAdam
 from torch.utils.data import DataLoader
 from torchinfo import summary
 
@@ -82,7 +83,7 @@ class PPOTrainer(TRLTrainer):
 
         self.trainer_buffer = None
         
-        self.agemt_buffer = ReplayBuffer(self.params["batch_size"])
+        self.agent_buffer = ReplayBuffer(self.params["batch_size"])
 
 
     def on_train_epoch_end(self):
@@ -159,6 +160,10 @@ class PPOTrainer(TRLTrainer):
         # self is passing the model to do forward passes with
         self.player.runGame(self, self.params['batch_size'])
         self.agent.fillBuffer()
+        
+        print("rank ", self.trainer.global_rank, " arrived at rungame barrier")
+        torch.distributed.barrier()
+        
         self.kl_ctl_rew.kl_list = []
         scores, queries, responses, values_next, ret_cross, adv_cross, values, logprobs = self.agent_buffer.sample(
             self.params['batch_size'])
@@ -177,6 +182,7 @@ class PPOTrainer(TRLTrainer):
         ref_logprobs = \
         self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True)[
             "ref_logprobs"]
+        print("rank ", self.trainer.global_rank, " finished ref logprobs")
 
         timing[f'time/{self.alg_name}/forward_pass'] = time.time() - t
 
@@ -189,12 +195,16 @@ class PPOTrainer(TRLTrainer):
         for lineItem in zip(scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs,
                             values, rewards, non_score_reward):
             self.trainer_buffer.append(lineItem)
+        print("rank ", self.trainer.global_rank, " finished train buffer")
 
     def configure_optimizers(self) -> List[Optimizer]:
         """ Initialize Adam optimizer"""
         # self.optimizer = Adam(model.parameters(), lr=self.params['lr'])
         # optimizer = Adam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
-        optimizer = DeepSpeedCPUAdam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
+        if self.deepspeed_offload:
+            optimizer = DeepSpeedCPUAdam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
+        else:
+            optimizer = FusedAdam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
         return [optimizer]
 
     def __dataloader(self) -> DataLoader:
@@ -251,6 +261,7 @@ class PPOTrainer(TRLTrainer):
         output = {}
 
         for i in range(int(bs / fbs)):
+            print("rank ", self.trainer.global_rank, " ref batch ", i)
             query_batch = queries[i * fbs:(i + 1) * fbs]
             response_batch = responses[i * fbs:(i + 1) * fbs]
             model_input = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])
@@ -298,6 +309,7 @@ class PPOTrainer(TRLTrainer):
 
         rem = bs % fbs
         if rem != 0:
+            print("rank ", self.trainer.global_rank, " final ref batch ", rem)
             query_batch = queries[-rem:]
             response_batch = responses[-rem:]
             input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])[
@@ -491,16 +503,16 @@ def train(model_name, single_game=True):
     from time import time
 
     UPDATE_FREQUENCY = 64
-    FORWARD_BATCH = 2
+    FORWARD_BATCH = 16
     LOG_FREQUENCY = 1
     SAVE_FREQUENCY = 16
-    NUM_AGENTS = 4
+    NUM_AGENTS = 16
 
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
     trainer = pl.Trainer(
         enable_checkpointing=False,
         logger=False,
-        accelerator='gpu', devices=2,
+        accelerator='gpu', devices=8,
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(
@@ -524,8 +536,8 @@ def train(model_name, single_game=True):
 if __name__ == "__main__":
     import argparse
 
-    # model_name = 'gpt2'
-    model_name = 'EleutherAI/gpt-j-6B'
+    model_name = 'gpt2'
+    # model_name = 'EleutherAI/gpt-j-6B'
     # model_name = 'EleutherAI/gpt-neo-1.3B'
     # model_name = "EleutherAI/gpt-neox-20b"
     single_game = False

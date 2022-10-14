@@ -118,7 +118,7 @@ class TRLTrainer(pl.LightningModule):
             self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
             self.tokenizer.pad_token = self.tokenizer.unk_token
 
-        print(self.model.config.torch_dtype)
+        # print(self.model.config.torch_dtype)
         summary(self.model)
         self.config = self.model.config
 
@@ -164,7 +164,7 @@ class TRLTrainer(pl.LightningModule):
         
         if self.params["single_game"]:
             # agent = NLPAgent(buffer, humanTurns=0)
-            self.agent = VectorNLPAgent(self.agemt_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
+            self.agent = VectorNLPAgent(self.agent_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
                                    world_size=self.trainer.world_size)
             print("Training")
             self.agent.train()  # Tell the agent it should update its parameters.
@@ -174,7 +174,7 @@ class TRLTrainer(pl.LightningModule):
                                   exTurns=0.25, rank=self.trainer.global_rank, world_size=self.trainer.world_size)
 
         else:
-            self.agent = VectorNLPAgent(self.agemt_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
+            self.agent = VectorNLPAgent(self.agent_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
                                    world_size=self.trainer.world_size)
             print("Training on 100 games")
             self.agent.train()  # Tell the agent it should update its parameters.
@@ -190,6 +190,7 @@ class TRLTrainer(pl.LightningModule):
             print("game time ", self.game_time)
 
         self.epoch_time = time.time()
+        print("rank ", self.trainer.global_rank, " arrived at epoch barrier")
         torch.distributed.barrier()
 
     def compute_rewards(self, scores, logprobs, ref_logprobs):

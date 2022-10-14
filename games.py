@@ -166,8 +166,10 @@ class VectorPlayer:
             exTurnSampler = torch.distributions.bernoulli.Bernoulli(probs=self.exTurns)
         total_steps = steps
         while steps > 0:
-            if self.rank == 0:
-                print("\r", total_steps - steps, "/", total_steps, sep="", end="", flush=True)
+            # if self.rank == 0:
+            #     print("\r", total_steps - steps, "/", total_steps, sep="", end="", flush=True)
+            print(total_steps - steps, "/", total_steps, " on rank ", self.rank, sep="", flush=True)
+            torch.distributed.barrier()
             stepsCompleted = self.num_agents
 
             if self.exTurns is not None:
@@ -195,8 +197,10 @@ class VectorPlayer:
             if hasattr(self.agent, 'reportScore'):
                 self.agent.reportScore(self.score, self.done, self.infos)
             self.nb_moves += 1
-        if self.rank == 0:
-            print("\r", total_steps - steps, "/", total_steps, sep="", flush=True)
+        # if self.rank == 0:
+        #     print("\r", total_steps - steps, "/", total_steps, sep="", flush=True)
+        print(total_steps - steps, "/", total_steps, " on rank ", self.rank, sep="", flush=True)
+        torch.distributed.barrier()
 
             
     def close(self):
