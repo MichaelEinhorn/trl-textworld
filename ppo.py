@@ -222,6 +222,7 @@ class PPOTrainer(TRLTrainer):
         return self.__dataloader()
 
     def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False, attention_mask=None, outputLogits=True):
+        print(f"forward on rank {self.trainer.global_rank} with cache {use_cache} with past key {past_key_values is not None}  vals {outputVals} reference {outputRef} mask {attention_mask is not None}  logit {outputLogits}") 
         output = {}
         if outputLogits or outputVals:
             if past_key_values is None:
@@ -229,6 +230,7 @@ class PPOTrainer(TRLTrainer):
             else:
                 lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache,
                                    past_key_values=past_key_values, attention_mask=attention_mask)
+            print(f"forward on rank {self.trainer.global_rank} finished hugging face model")
             # print(dir(lmOut))
             if outputLogits:
                 logits = lmOut.logits
@@ -247,7 +249,8 @@ class PPOTrainer(TRLTrainer):
             with torch.no_grad():
                 ref_logits = self.ref_model(input_ids).logits
                 output["ref_logits"] = ref_logits
-
+        
+        print(f"forward on rank {self.trainer.global_rank} finished all")
         return output
 
     def batched_forward_pass(self, queries, responses, outputLogits=True, outputVals=True, outputRef=True):
