@@ -16,6 +16,7 @@ from datastructures import LineBuffer
 from datastructures import RLDatasetCollator
 
 import pytorch_lightning as pl
+from pytorch_lightning import seed_everything
 import argparse
 from collections import OrderedDict, deque
 from typing import Tuple, List
@@ -78,13 +79,15 @@ class PPOTrainer(TRLTrainer):
 
     def __init__(self, model_name, **params):
         super().__init__(model_name, **params)
-        self.config.num_labels = 1
-        self.valueHead = ValueHead(self.config)
 
         self.trainer_buffer = None
         
         self.agent_buffer = ReplayBuffer(self.params["batch_size"])
-
+        
+    # def setup(self, stage=None):
+    #     super().setup(stage=stage)
+    def configure_sharded_model(self):
+        self.valueHead = ValueHead(self.model_name)
 
     def on_train_epoch_end(self):
         for ctl in [self.kl_ctl, self.kl_ctl_rew]:
@@ -161,7 +164,7 @@ class PPOTrainer(TRLTrainer):
         self.player.runGame(self, self.params['batch_size'])
         self.agent.fillBuffer()
         
-        print("rank ", self.trainer.global_rank, " arrived at rungame barrier")
+        # print("rank ", self.trainer.global_rank, " arrived at rungame barrier")
         torch.distributed.barrier()
         
         self.kl_ctl_rew.kl_list = []
@@ -182,7 +185,7 @@ class PPOTrainer(TRLTrainer):
         ref_logprobs = \
         self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True)[
             "ref_logprobs"]
-        print("rank ", self.trainer.global_rank, " finished ref logprobs")
+        # print("rank ", self.trainer.global_rank, " finished ref logprobs")
 
         timing[f'time/{self.alg_name}/forward_pass'] = time.time() - t
 
@@ -195,7 +198,7 @@ class PPOTrainer(TRLTrainer):
         for lineItem in zip(scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs,
                             values, rewards, non_score_reward):
             self.trainer_buffer.append(lineItem)
-        print("rank ", self.trainer.global_rank, " finished train buffer")
+        # print("rank ", self.trainer.global_rank, " finished train buffer")
 
     def configure_optimizers(self) -> List[Optimizer]:
         """ Initialize Adam optimizer"""
@@ -208,6 +211,7 @@ class PPOTrainer(TRLTrainer):
         return [optimizer]
 
     def __dataloader(self) -> DataLoader:
+        self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
         self.trainer_buffer = LineBuffer(self.params['batch_size'])
         dataset = RLDataset(self.trainer_buffer, self.params['batch_size'],
                             rank=self.trainer.global_rank, world_size=self.trainer.world_size)
@@ -222,7 +226,7 @@ class PPOTrainer(TRLTrainer):
         return self.__dataloader()
 
     def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False, attention_mask=None, outputLogits=True):
-        print(f"forward on rank {self.trainer.global_rank} with cache {use_cache} with past key {past_key_values is not None}  vals {outputVals} reference {outputRef} mask {attention_mask is not None}  logit {outputLogits}") 
+        # print(f"forward on rank {self.trainer.global_rank} with cache {use_cache} with past key {past_key_values is not None}  vals {outputVals} reference {outputRef} mask {attention_mask is not None}  logit {outputLogits}") 
         output = {}
         if outputLogits or outputVals:
             if past_key_values is None:
@@ -230,7 +234,7 @@ class PPOTrainer(TRLTrainer):
             else:
                 lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache,
                                    past_key_values=past_key_values, attention_mask=attention_mask)
-            print(f"forward on rank {self.trainer.global_rank} finished hugging face model")
+            # print(f"forward on rank {self.trainer.global_rank} finished hugging face model")
             # print(dir(lmOut))
             if outputLogits:
                 logits = lmOut.logits
@@ -250,7 +254,7 @@ class PPOTrainer(TRLTrainer):
                 ref_logits = self.ref_model(input_ids).logits
                 output["ref_logits"] = ref_logits
         
-        print(f"forward on rank {self.trainer.global_rank} finished all")
+        # print(f"forward on rank {self.trainer.global_rank} finished all")
         return output
 
     def batched_forward_pass(self, queries, responses, outputLogits=True, outputVals=True, outputRef=True):
@@ -264,7 +268,7 @@ class PPOTrainer(TRLTrainer):
         output = {}
 
         for i in range(int(bs / fbs)):
-            print("rank ", self.trainer.global_rank, " ref batch ", i)
+            # print("rank ", self.trainer.global_rank, " ref batch ", i)
             query_batch = queries[i * fbs:(i + 1) * fbs]
             response_batch = responses[i * fbs:(i + 1) * fbs]
             model_input = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])
@@ -312,7 +316,7 @@ class PPOTrainer(TRLTrainer):
 
         rem = bs % fbs
         if rem != 0:
-            print("rank ", self.trainer.global_rank, " final ref batch ", rem)
+            # print("rank ", self.trainer.global_rank, " final ref batch ", rem)
             query_batch = queries[-rem:]
             response_batch = responses[-rem:]
             input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])[
@@ -506,10 +510,10 @@ def train(model_name, single_game=True):
     from time import time
 
     UPDATE_FREQUENCY = 64
-    FORWARD_BATCH = 16
+    FORWARD_BATCH = 8
     LOG_FREQUENCY = 1
     SAVE_FREQUENCY = 16
-    NUM_AGENTS = 16
+    NUM_AGENTS = 8
 
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
     trainer = pl.Trainer(
@@ -519,10 +523,12 @@ def train(model_name, single_game=True):
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(
-            config="ds_config_zero3_light.json"
+            stage=3,
+            offload_optimizer=True,
+            offload_parameters=True 
         ),
     )
-    print("rank out of world :", trainer.global_rank, " " , trainer.world_size)
+    # print("rank out of world :", trainer.global_rank, " " , trainer.world_size)
     UPDATE_FREQUENCY = max(UPDATE_FREQUENCY // trainer.world_size, 1)
     FORWARD_BATCH = max(FORWARD_BATCH // trainer.world_size, 1)
     NUM_AGENTS = max(NUM_AGENTS // trainer.world_size, 1)
@@ -538,14 +544,17 @@ def train(model_name, single_game=True):
 
 if __name__ == "__main__":
     import argparse
+    
+    seed_everything(42)
 
-    model_name = 'gpt2'
+    # model_name = 'gpt2'
     # model_name = 'EleutherAI/gpt-j-6B'
     # model_name = 'EleutherAI/gpt-neo-1.3B'
-    # model_name = "EleutherAI/gpt-neox-20b"
+    model_name = "EleutherAI/gpt-neox-20b"
     single_game = False
     
     Path("stats").mkdir(parents=True, exist_ok=True)
     Path("checkpoints").mkdir(parents=True, exist_ok=True)
 
     train(model_name, single_game=single_game)
+f

@@ -496,22 +496,24 @@ class VectorNLPAgent:
 
         logprobList = []
         valuesList = []
-        printFile("start generation loop", 0, epoch, self.rank, self.num_agents)
-        while new_tokens == 0 or (new_tokens < maxLen and torch.sum(finished) > 0):
+        # printFile("start generation loop", 0, epoch, self.rank, self.num_agents)
+        # while new_tokens == 0 or (new_tokens < maxLen and torch.sum(finished) > 0):
+        # apparently pytorch lightning or deepspeed doesn't like when 1 gpu is doing a forward when the other is not
+        while new_tokens == 0 or (new_tokens < maxLen):
             # run model
             with torch.no_grad():
                 # get logits, only get last value
                 input_ids = input_ids.to(lightmodel.getDevice())
                 attention_mask = attention_mask.to(lightmodel.getDevice())
                 # input_ids = input_ids.to(lightmodel.model.device)
-                printFile("new tokens " + str(new_tokens), 0, epoch, self.rank, self.num_agents)
+                # printFile("new tokens " + str(new_tokens), 0, epoch, self.rank, self.num_agents)
                 if cache is None:
                     lmout = lightmodel(input_ids, use_cache=True, outputVals=True, attention_mask=attention_mask)
                 else:
                     # print("cache ", input_ids[:, -1:].shape, len(cache), attention_mask.shape)
                     lmout = lightmodel(input_ids[:, -1:], outputVals=True, use_cache=True,
                                                        past_key_values=cache, attention_mask=attention_mask)
-                printFile("finished forward", 0, epoch, self.rank, self.num_agents)
+                # printFile("finished forward", 0, epoch, self.rank, self.num_agents)
 
                 logits, cache, values = lmout["logits"], lmout["cache"], lmout["values"]
 
@@ -537,7 +539,7 @@ class VectorNLPAgent:
 
                 new_tokens += 1
 
-                printFile("next token " + str(next_token), 0, epoch, self.rank, self.num_agents)
+                # printFile("next token " + str(next_token), 0, epoch, self.rank, self.num_agents)
                 
         # print("att shape ", input_ids.shape, attention_mask.shape)
         # print(logprobList)
@@ -550,7 +552,7 @@ class VectorNLPAgent:
 
 
         for i in range(self.num_agents):
-            printFile("post process", i, epoch, self.rank, self.num_agents)
+            # printFile("post process", i, epoch, self.rank, self.num_agents)
 
             inp = input_ids[i:i+1]
             att = attention_mask[i]

@@ -31,6 +31,7 @@ from agents import NLPAgent, VectorNLPAgent
 
 from transformers import DataCollatorForLanguageModeling
 from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
+from transformers.deepspeed import HfDeepSpeedConfig
 
 from core import (logprobs_from_logits,
                   whiten,
@@ -91,7 +92,47 @@ class TRLTrainer(pl.LightningModule):
         self.params = self.default_params
         self.params.update(params)
         self.alg_name = self.params["alg_name"]
+        self.model_name = model_name
 
+        if self.params['adap_kl_ctrl']:
+            self.kl_ctl = AdaptiveKLController(self.params['init_kl_coef'],
+                                               self.params['target'],
+                                               self.params['horizon'])
+        else:
+            self.kl_ctl = FixedKLController(self.params['init_kl_coef'])
+
+        if self.params['adap_kl_ctrl_rew']:
+            self.kl_ctl_rew = AdaptiveKLController(self.params['init_kl_coef_rew'],
+                                               self.params['target_rew'],
+                                               self.params['horizon_rew'])
+        else:
+            self.kl_ctl_rew = FixedKLController(self.params['init_kl_coef_rew'])
+            
+        self.all_stats = []
+        
+        self.saveModelTime = 0
+        self.saveStatTime = 0
+        self.epoch_time = 0
+        self.game_time = 0
+
+    def getDevice(self):
+        return self.device    
+
+    @property
+    def deepspeed_offload(self) -> bool:
+        strategy = self.trainer.strategy
+        if isinstance(strategy, DeepSpeedStrategy):
+            config = strategy.config['zero_optimization']
+            return config.get('offload_optimizer') or config.get('offload_param')
+        return False
+
+    def setup(self, stage=None):
+        self.dschf = HfDeepSpeedConfig(self.trainer.strategy.config)
+        """
+        This hook allows us to setup layers within a context that auto shards the model as it is created.
+        Useful for very large models, where we want to shard instantly.
+        """
+        model_name = self.model_name
         # gpt2 and gpt2-xl
         if 'gpt2' in model_name:
             from transformers import GPT2Tokenizer, GPT2Model, GPT2LMHeadModel
@@ -119,44 +160,8 @@ class TRLTrainer(pl.LightningModule):
             self.tokenizer.pad_token = self.tokenizer.unk_token
 
         # print(self.model.config.torch_dtype)
-        summary(self.model)
-        self.config = self.model.config
-
-        self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
-
-        if self.params['adap_kl_ctrl']:
-            self.kl_ctl = AdaptiveKLController(self.params['init_kl_coef'],
-                                               self.params['target'],
-                                               self.params['horizon'])
-        else:
-            self.kl_ctl = FixedKLController(self.params['init_kl_coef'])
-
-        if self.params['adap_kl_ctrl_rew']:
-            self.kl_ctl_rew = AdaptiveKLController(self.params['init_kl_coef_rew'],
-                                               self.params['target_rew'],
-                                               self.params['horizon_rew'])
-        else:
-            self.kl_ctl_rew = FixedKLController(self.params['init_kl_coef_rew'])
-            
-        self.all_stats = []
+        # summary(self.model)
         
-        self.saveModelTime = 0
-        self.saveStatTime = 0
-        self.epoch_time = 0
-        self.game_time = 0
-
-    def getDevice(self):
-        return self.device
-
-    @property
-    def deepspeed_offload(self) -> bool:
-        strategy = self.trainer.strategy
-        if isinstance(strategy, DeepSpeedStrategy):
-            config = strategy.config['zero_optimization']
-            return config.get('offload_optimizer') or config.get('offload_param')
-        return False
-
-    def on_fit_start(self):
         if self.trainer.is_global_zero:
             getEnvs()
             print("generated envs")
@@ -187,10 +192,10 @@ class TRLTrainer(pl.LightningModule):
             game_time = time.time()
             self.runGame()
             self.game_time = time.time() - game_time
-            print("game time ", self.game_time)
+            # print("game time ", self.game_time)
 
         self.epoch_time = time.time()
-        print("rank ", self.trainer.global_rank, " arrived at epoch barrier")
+        # print("rank ", self.trainer.global_rank, " arrived at epoch barrier")
         torch.distributed.barrier()
 
     def compute_rewards(self, scores, logprobs, ref_logprobs):

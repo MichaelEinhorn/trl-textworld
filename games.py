@@ -30,7 +30,7 @@ def getEnvs(download=True):
 
 class Player:
     def __init__(self, agent, path, max_step=100, verbose=True, rank=0, world_size=1):
-        torch.manual_seed(20211021 + rank)  # For reproducibility when using action sampling.
+        # torch.manual_seed(20211021 + rank)  # For reproducibility when using action sampling.
 
         self.agent = agent
         self.infos_to_request = agent.infos_to_request
@@ -105,7 +105,7 @@ class Player:
 
 class VectorPlayer:
     def __init__(self, agent, path, max_step=100, verbose=True, num_agents=1, rank=0, world_size=1, **kwargs):
-        torch.manual_seed(20211021 + rank)  # For reproducibility when using action sampling.
+        # torch.manual_seed(20211021 + rank)  # For reproducibility when using action sampling.
 
         self.exTurns = None
         if "exTurns" in kwargs:
@@ -160,16 +160,17 @@ class VectorPlayer:
         self.nb_moves = 0
 
     def runGame(self, lightmodel, steps=10):
-        print("\n" + "running game for " + str(steps) + " steps on rank " + str(self.rank))
+        if self.rank == 0:
+            print("\n" + "running game for " + str(steps) + " steps on rank " + str(self.rank))
         exTurnSampler = None
         if self.exTurns is not None:
             exTurnSampler = torch.distributions.bernoulli.Bernoulli(probs=self.exTurns)
         total_steps = steps
         while steps > 0:
-            # if self.rank == 0:
-            #     print("\r", total_steps - steps, "/", total_steps, sep="", end="", flush=True)
-            print(total_steps - steps, "/", total_steps, " on rank ", self.rank, sep="", flush=True)
-            torch.distributed.barrier()
+            if self.rank == 0:
+                print("\r", total_steps - steps, "/", total_steps, sep="", end="", flush=True)
+            # print(total_steps - steps, "/", total_steps, " on rank ", self.rank, sep="", flush=True)
+            # torch.distributed.barrier()
             stepsCompleted = self.num_agents
 
             if self.exTurns is not None:
@@ -197,9 +198,9 @@ class VectorPlayer:
             if hasattr(self.agent, 'reportScore'):
                 self.agent.reportScore(self.score, self.done, self.infos)
             self.nb_moves += 1
-        # if self.rank == 0:
-        #     print("\r", total_steps - steps, "/", total_steps, sep="", flush=True)
-        print(total_steps - steps, "/", total_steps, " on rank ", self.rank, sep="", flush=True)
+        if self.rank == 0:
+            print("\r", total_steps - steps, "/", total_steps, sep="", flush=True)
+        # print(total_steps - steps, "/", total_steps, " on rank ", self.rank, sep="", flush=True)
         torch.distributed.barrier()
 
             
