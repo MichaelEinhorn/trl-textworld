@@ -236,7 +236,7 @@ class NLPAgent:
                 
                 
                 next_token_logits = logits[:, -1, :]
-                next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=0, top_p=1)
+                # next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=0, top_p=1)
                 probs = F.softmax(next_token_logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
                 input_ids = torch.cat([input_ids, next_token.unsqueeze(-1)], dim=-1)
@@ -572,7 +572,7 @@ class VectorNLPAgent:
                 logits, cache, values = lmout["logits"], lmout["cache"], lmout["values"]
 
                 next_token_logits = logits[:, -1, :]
-                next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=0, top_p=1)
+                # next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=0, top_p=1)
                 probs = F.softmax(next_token_logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
                 input_ids = torch.cat([input_ids, next_token.unsqueeze(-1)], dim=-1)
