@@ -46,7 +46,8 @@ from core import (logprobs_from_logits,
                   stack_dicts,
                   add_suffix,
                   WANDB_PADDING,
-                  pad_mask)
+                  pad_mask,
+                  getKW)
 
 class PPOTrainer(TRLTrainer):
     """
@@ -56,6 +57,7 @@ class PPOTrainer(TRLTrainer):
     default_params = {
         "alg_name": "ppo",
         "lr": 1.41e-5,
+        "reference": True,
         # KL Calcuated per forward batch importance corrected exact gradients
         "adap_kl_ctrl": False,
         "init_kl_coef": 0.1,
@@ -75,6 +77,8 @@ class PPOTrainer(TRLTrainer):
         "batch_size": 256,
         "forward_batch_size": 16,
         "epochs_per_game": 4,
+        "game_gamma": 0.8,
+        "few_shot": 1
     }
 
     def __init__(self, model_name, **params):
@@ -83,6 +87,10 @@ class PPOTrainer(TRLTrainer):
         self.trainer_buffer = None
         
         self.agent_buffer = ReplayBuffer(self.params["batch_size"])
+
+        self.playerKWArgs = getKW(exTurns=0.25)
+        self.agentKWArgs = getKW(useUnfinished=True, GAMMA=self.params["game_gamma"], MEMORY_LEN=self.params["few_shot"],
+                                 testCountLetters=('e', 'E'))
         
     # def setup(self, stage=None):
     #     super().setup(stage=stage)
@@ -173,7 +181,6 @@ class PPOTrainer(TRLTrainer):
 
         # first part of original step, gets old logprobs and ref logprobs
         bs = self.params['batch_size']
-        assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"
 
         timing = dict()
         t0 = time.time()
@@ -557,4 +564,3 @@ if __name__ == "__main__":
     Path("checkpoints").mkdir(parents=True, exist_ok=True)
 
     train(model_name, single_game=single_game)
-f

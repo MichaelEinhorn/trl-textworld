@@ -110,6 +110,9 @@ class VectorPlayer:
         self.exTurns = None
         if "exTurns" in kwargs:
             self.exTurns = kwargs["exTurns"]
+        self.decisionTrans = False
+        if "decision" in kwargs:
+            self.decisionTrans = True
 
         self.agent = agent
         self.num_agents = num_agents
@@ -178,6 +181,8 @@ class VectorPlayer:
                 if ex == 1:
                     stepsCompleted = 0
                 command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel, exTurn=ex)
+            elif self.decisionTrans:
+                command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel, decisionTrans=self.decisionTrans)
             else:
                 command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel)
 

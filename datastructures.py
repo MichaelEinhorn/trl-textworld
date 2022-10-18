@@ -227,6 +227,23 @@ class RLDatasetCollator():
                 padded_stack(non_score_reward)
                 )
 
+class DecisionDataset(IterableDataset):
+    def __init__(self, buffer, sample_size: int = 200):
+        self.buffer = buffer
+        self.sample_size = sample_size
+
+    def __iter__(self):
+        input_ids = self.buffer.sample(self.sample_size)
+        for i in range(len(input_ids)):
+            yield input_ids[i]
+
+class DecisionDatasetCollator():
+    def __init__(self, text_collator=None):
+        self.text_collator = text_collator
+
+    def __call__(self, input_ids):
+        return self.text_collator(input_ids)
+
 class LineBuffer:
     """
     Replay Buffer for storing past experiences allowing the agent to learn from them

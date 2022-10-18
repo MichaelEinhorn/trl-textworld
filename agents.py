@@ -307,13 +307,13 @@ class NLPAgent:
 class VectorNLPAgent:
     """ Hugging Face Transformer Agent """
 
-    GAMMA = 0.8
-    MEMORY_LEN = 1
-
-    def __init__(self, buffer, num_agents=1, rank=0, world_size=1) -> None:
+    def __init__(self, buffer, num_agents=1, rank=0, world_size=1, useUnfinished=True, GAMMA=0.8, MEMORY_LEN=1, testCountLetters=None, **kwargs) -> None:
         self._initialized = False
         self._epsiode_has_started = False
         self.num_agents = num_agents
+
+        self.GAMMA = GAMMA
+        self.MEMORY_LEN = MEMORY_LEN
 
         self.memory = [RollingBuffer(self.MEMORY_LEN) for i in range(self.num_agents)]
         self.transitionBuffer = buffer
@@ -324,8 +324,9 @@ class VectorNLPAgent:
 
         # PPO trainer uses next values to get a value across transitions
         self.returnNextValues = True
+        self.useUnfinished = useUnfinished
 
-        self.testCountLetters = ('e', 'E')  # None
+        self.testCountLetters = testCountLetters  # None
 
         self.rewValStat = []
         
@@ -356,11 +357,12 @@ class VectorNLPAgent:
                         won=True, lost=True)
 
     def _discount_rewards(self):
-        returnsList, advantagesList = [], []
+        returnsList, advantagesList, finishedList = [], [], []
         for i in range(self.num_agents):
             trans = self.transitions[i]
             R = 0
-            returns, advantages = [], []
+            returns, advantages, finished = [], [], []
+            fin = False
             for t in reversed(range(len(trans))):
                 # dont discount between episodes
                 rewards, _, _, values, done, _, _ = trans[t]
@@ -370,33 +372,48 @@ class VectorNLPAgent:
                 adv = R - values
                 returns.append(R)
                 advantages.append(adv)
+                finished.append(fin)
 
             returnsList.append(returns[::-1])
             advantagesList.append(advantages[::-1])
-        return returnsList, advantagesList
+            finishedList.append(finished[::-1])
+        return returnsList, advantagesList, finishedList
 
-    def fillBuffer(self):
+    def fillBuffer(self, **kwargs):
         np.savetxt("rewVals.csv", self.rewValStat, delimiter=',')
         # get discounted returns and advantages across multiple actions. Currently not used
-        returnsList, advantagesList = self._discount_rewards()
+        returnsList, advantagesList, finishedList = self._discount_rewards()
+        unfinCount = [0 for i in range(self.num_agents)]
         for i in range(self.num_agents):
             trans = self.transitions[i]
             returns = returnsList[i]
             advantages = advantagesList[i]
+            finished = finishedList[i]
             for t in reversed(range(len(trans))):
                 rew, prompt, action, next_value, done, value, logprob = trans[t]
                 ret_cross = returns[t]
                 adv_cross = advantages[t]
+                fin = finished[t]
                 # returns and advantages across multiple actions
                 # ppo trainer computes returns and advantages across tokens within an action
                 # not sure if these are usefull
                 exper = (rew, prompt[0], action[0], next_value, ret_cross, adv_cross, value[0], logprob[0])
-                self.transitionBuffer.append(exper)
-
-        self.transitions = [[] for i in range(self.num_agents)]
+                if fin or self.useUnfinished:
+                    self.transitionBuffer.append(exper)
+                else:
+                    unfinCount[i] += 1
+        if self.useUnfinished:
+            self.transitions = [[] for i in range(self.num_agents)]
+        else:
+            self.transitions = [self.transitions[i][-unfinCount[i]:] for i in range(self.num_agents)]
 
     # fill in results from action and train if time
-    def reportScore(self, score, done, infos):
+    def reportScore(self, score, done, infos, **kwargs):
+        exTurn = False
+        if "exTurn" in kwargs:
+            if kwargs["exTurn"] == 1:
+                exTurn = True
+
         for i in range(self.num_agents):
             if self.mode == "train":
                 reward = score[i] - self.last_score[i]  # Reward is the gain/loss in score.
@@ -406,10 +423,11 @@ class VectorNLPAgent:
                 if infos["lost"][i]:
                     reward -= 100
 
-                if self.testCountLetters is None:
+                if self.testCountLetters is None and not exTurn:
                     self.transitions[i][-1][0] = reward  # Update reward information. Was initialized as none
 
-                self.no_train_step[i] += 1
+                if not exTurn:
+                    self.no_train_step[i] += 1
 
                 self.stats["max"]["score"].append(score)
 
@@ -419,8 +437,9 @@ class VectorNLPAgent:
                     self.memory[i].clear()
                     # self.clearTextWorldArt[i] = True
                     # mark last transition of episode
-                    if len(self.transitions[i]) != 0:
-                        self.transitions[i][-1][4] = True
+                    if not exTurn:
+                        if len(self.transitions[i]) != 0:
+                            self.transitions[i][-1][4] = True
                     
     def act(self, observation, score, done, infos, lightmodel, **kwargs):
         promptList = []
@@ -442,10 +461,13 @@ class VectorNLPAgent:
             pastStates = ""
             for mem in self.memory[i]:
                 pastStates = pastStates + mem + "\n"
-            admissible_commands_str = "actions: "
-            for adm_cmd in infos["admissible_commands"][i]:
+            admissible_commands_str = "You can "
+            for cmd_idx in range(len(infos["admissible_commands"][i]) - 1):
+                adm_cmd = infos["admissible_commands"][i][cmd_idx]
+            # for adm_cmd in infos["admissible_commands"][i]:
                 admissible_commands_str += adm_cmd + ", "
-            input_ = "{}\n{}\n{}\n{}\nWhat do you do?\n".format(obs, infos["description"][i], infos["inventory"][i], admissible_commands_str)
+            admissible_commands_str += "or " + adm_cmd
+            input_ = "{}. {}. {}. {}. What do you do? ".format(obs, infos["description"][i], infos["inventory"][i], admissible_commands_str)
             prompt = pastStates + input_
 
             # convert text to tensor
@@ -479,6 +501,37 @@ class VectorNLPAgent:
                     printFile(action, i, epoch, self.rank, self.num_agents)
                     actionList.append(action)
                 return actionList
+
+        if "decisionTrans" in kwargs:
+            if kwargs["decisionTrans"]:
+                for i in range(self.num_agents):
+                    commands = infos["admissible_commands"][i]
+                    idx = np.random.choice(len(commands))
+                    action = commands[idx]
+                    input_ = inputList[i]
+                    self.memory[i].append(input_ + action)
+                    printFile(action, i, epoch, self.rank, self.num_agents)
+                    actionList.append(action)
+
+                for i in range(self.num_agents):
+                    if self.mode == "train":
+                        action = actionList[i]
+                        prompt = promptList[i]
+                        reward = None  # Reward will be set on the next call
+
+                        if self.testCountLetters is not None:
+                            count = 0
+                            for letter in self.testCountLetters:
+                                count += action.count(letter)
+                            # count /= len(action)
+                            reward = torch.tensor(count, dtype=torch.float16)
+                            # if i == 0:
+                            #     print("reward", reward)
+                            printFile("reward " + str(reward), i, epoch, self.rank, self.num_agents)
+                            self.rewValStat.append([lightmodel.current_epoch, reward, 0])
+
+                        self.transitions[i].append(
+                            [reward, prompt, action, 0, False, 0, 0])
 
         model_input = lightmodel.tokenizer(promptList, add_special_tokens=True, return_tensors="pt", padding=True, return_attention_mask=True)
         input_ids = model_input["input_ids"]

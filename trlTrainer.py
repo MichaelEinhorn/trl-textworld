@@ -137,27 +137,40 @@ class TRLTrainer(pl.LightningModule):
         if 'gpt2' in model_name:
             from transformers import GPT2Tokenizer, GPT2Model, GPT2LMHeadModel
             self.model = GPT2LMHeadModel.from_pretrained(model_name)
-            self.ref_model = GPT2LMHeadModel.from_pretrained(model_name)
+            if self.params["reference"]:
+                self.ref_model = GPT2LMHeadModel.from_pretrained(model_name)
             self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
             self.tokenizer.pad_token = self.tokenizer.unk_token
         elif 'gpt-neox' in model_name:
             from transformers import GPTNeoXForCausalLM, GPTNeoXTokenizerFast
             self.model = GPTNeoXForCausalLM.from_pretrained(model_name)
-            self.ref_model = GPTNeoXForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPTNeoXTokenizerFast.from_pretrained(model_name)
+            if self.params["reference"]:
+                self.ref_model = GPTNeoXForCausalLM.from_pretrained(model_name)
+            self.tokenizer = GPTNeoXTokenizerFast.from_pretrained(model_name, padding_side='left')
             self.tokenizer.pad_token = self.tokenizer.unk_token
         elif 'gpt-j' in model_name:
             from transformers import GPT2Tokenizer, GPTJForCausalLM
             self.model = GPTJForCausalLM.from_pretrained(model_name)
-            self.ref_model = GPTJForCausalLM.from_pretrained(model_name)
+            if self.params["reference"]:
+                self.ref_model = GPTJForCausalLM.from_pretrained(model_name)
             self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2', padding_side='left')
             self.tokenizer.pad_token = self.tokenizer.unk_token
+        # neox already caught
         elif 'gpt-neo' in model_name:
             from transformers import GPTNeoForCausalLM, GPT2Tokenizer
             self.model = GPTNeoForCausalLM.from_pretrained(model_name)
-            self.ref_model = GPTNeoForCausalLM.from_pretrained(model_name)
+            if self.params["reference"]:
+                self.ref_model = GPTNeoForCausalLM.from_pretrained(model_name)
             self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
             self.tokenizer.pad_token = self.tokenizer.unk_token
+        else:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            self.model = AutoModelForCausalLM.from_pretrained(model_name)
+            if self.params["reference"]:
+                self.ref_model = AutoModelForCausalLM.from_pretrained(model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
+            self.tokenizer.pad_token = self.tokenizer.unk_token
+
 
         # print(self.model.config.torch_dtype)
         # summary(self.model)
@@ -170,21 +183,21 @@ class TRLTrainer(pl.LightningModule):
         if self.params["single_game"]:
             # agent = NLPAgent(buffer, humanTurns=0)
             self.agent = VectorNLPAgent(self.agent_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
-                                   world_size=self.trainer.world_size)
+                                   world_size=self.trainer.world_size, **self.agentKWArgs)
             print("Training")
             self.agent.train()  # Tell the agent it should update its parameters.
             # player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
             self.player = VectorPlayer(self.agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False,
                                   num_agents=self.params["num_agents"],
-                                  exTurns=0.25, rank=self.trainer.global_rank, world_size=self.trainer.world_size)
+                                  rank=self.trainer.global_rank, world_size=self.trainer.world_size, **self.playerKWArgs)
 
         else:
             self.agent = VectorNLPAgent(self.agent_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
-                                   world_size=self.trainer.world_size)
+                                   world_size=self.trainer.world_size, **self.agentKWArgs)
             print("Training on 100 games")
             self.agent.train()  # Tell the agent it should update its parameters.
-            self.player = VectorPlayer(self.agent, "./training_games/", verbose=False, num_agents=self.params["num_agents"], exTurns=0.25,
-                                  rank=self.trainer.global_rank, world_size=self.trainer.world_size)  # Each game will be seen 5 times.
+            self.player = VectorPlayer(self.agent, "./training_games/", verbose=False, num_agents=self.params["num_agents"],
+                                  rank=self.trainer.global_rank, world_size=self.trainer.world_size, **self.playerKWArgs)  # Each game will be seen 5 times.
     
     def on_train_epoch_start(self):
         # train on the same data epochs per game times before generating a new set

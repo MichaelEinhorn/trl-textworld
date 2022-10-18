@@ -10,11 +10,9 @@ import random
 from argparse import Namespace
 
 from agents import VectorNLPAgent, NLPAgent
-from datastructures import RejectDataset
-from datastructures import RejectionBuffer
 from datastructures import ReplayBuffer
 from datastructures import LineBuffer
-from datastructures import RejectDatasetCollator
+from datastructures import DecisionDataset, DecisionDatasetCollator
 
 import pytorch_lightning as pl
 from pytorch_lightning import seed_everything
@@ -47,11 +45,11 @@ from core import (logprobs_from_logits,
                   getKW)
 
 
-class RejectionTuner(TRLTrainer):
+class DecisionTuner(TRLTrainer):
     default_params = {
-        "alg_name": "reject",
+        "alg_name": "decision",
         "lr": 1.41e-5,
-        "reference": True,
+        "reference": False,
         # KL Calcuated per forward batch importance corrected exact gradients
         "adap_kl_ctrl": False,
         "init_kl_coef": 0.1,
@@ -65,11 +63,10 @@ class RejectionTuner(TRLTrainer):
         # end KL
         "batch_size": 256,
         "forward_batch_size": 16,
-        "epochs_per_game": 4,
-        "clear_buffer_each_game": True,
-        "train_generation": False,
+        "epochs_per_game": 1,
         "game_gamma": 0.8,
-        "few_shot": 1,
+        "few_shot": 0,
+        "prepend": "return",
         # compat with ppo
         'vf_coef': 0
     }
@@ -77,10 +74,9 @@ class RejectionTuner(TRLTrainer):
     def __init__(self, model_name, **params):
         super().__init__(model_name, **params)
         self.trainer_buffer = None
-        self.rejectRatio = 0
-        self.agent_buffer = ReplayBuffer(self.params["game_batch_size"])
+        self.agent_buffer = ReplayBuffer(self.params["batch_size"])
 
-        self.playerKWArgs = getKW(exTurns=0.25)
+        self.playerKWArgs = getKW(decision=True)
         self.agentKWArgs = getKW(useUnfinished=True, GAMMA=self.params["game_gamma"], MEMORY_LEN=self.params["few_shot"],
                                  testCountLetters=('e', 'E'))
 
@@ -91,12 +87,11 @@ class RejectionTuner(TRLTrainer):
         return self.forward(input_ids, **kwargs)
     
     def __dataloader(self) -> DataLoader:
-        self.trainer_buffer = RejectionBuffer(min=False, rank=self.trainer.global_rank,
-                                              world_size=self.trainer.world_size)
-        dataset = RejectDataset(self.trainer_buffer, self.params['batch_size'], rank=self.trainer.global_rank, world_size=self.trainer.world_size)
+        self.trainer_buffer = LineBuffer(self.params['batch_size'])
+        dataset = DecisionDataset(self.trainer_buffer, self.params['batch_size'])
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=self.params['forward_batch_size'],
-                                collate_fn=RejectDatasetCollator(text_collator=self.data_collator)
+                                collate_fn=DecisionDatasetCollator(text_collator=self.data_collator)
                                 )
         return dataloader
 
@@ -135,8 +130,7 @@ class RejectionTuner(TRLTrainer):
 
         if outputRef:
             with torch.no_grad():
-                ref_logits = self.ref_model(input_ids).logits
-                output["ref_logits"] = ref_logits
+                output["ref_logits"] = None
 
         if outputVals:
             v = torch.zeros(list(logits.shape[0:2])+[1])
@@ -146,7 +140,7 @@ class RejectionTuner(TRLTrainer):
 
     def batched_forward_pass(self, queries, responses, outputLogits=True, outputVals=True, outputRef=True):
         """Calculate model outputs in multiple batches."""
-        bs = self.params['game_batch_size']
+        bs = self.params['batch_size']
         fbs = self.params['forward_batch_size']
         all_logprobs = []
         all_ref_logprobs = []
@@ -264,9 +258,6 @@ class RejectionTuner(TRLTrainer):
                 self.saveModelTime = time.time() - t
 
             if self.current_epoch % self.params['log_freq'] == 0:
-                data, scores_kl = self.trainer_buffer.sample(self.params['batch_size'])
-                scores, _, _, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
-
                 timing = dict()
                 timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
                 timing[f'time/{self.alg_name}/game_time'] = self.game_time
@@ -278,19 +269,21 @@ class RejectionTuner(TRLTrainer):
                 train_stats = stack_dicts(self.all_stats)
                 self.all_stats = []
 
-                train_stats['rejectRatio'] = self.rejectRatio
-                train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
-
                 # print("kl list ", len(self.kl_ctl_rew.kl_list))
-                stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
-                                               non_score_reward=non_score_reward, train_stats=train_stats)
+                self.kl_ctl.kl_list = []
+
+                stats = {}
+                for k, v in train_stats.items():
+                    # print(k, v)
+                    stats[f'{self.alg_name}/{k}'] = torch.mean(v, axis=0)
+
                 stats = stats_to_np(stats)
                 timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
 
-                self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
-                self.kl_ctl_rew.update(stats['objective/kl_rew'],
-                                       self.params['log_freq'] * self.params['batch_size'] // self.params[
-                                           f'epochs_per_game'])
+                # self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
+                # self.kl_ctl_rew.update(stats['objective/kl_rew'],
+                #                        self.params['log_freq'] * self.params['batch_size'] // self.params[
+                #                            f'epochs_per_game'])
 
                 # timing[f'time/{self.alg_name}/total'] = time.time() - t0
                 stats.update(timing)
@@ -300,83 +293,49 @@ class RejectionTuner(TRLTrainer):
                 self.saveStatTime = time.time() - t
 
         # stats are computed on process 1, update kl ctls on all processes
-        kl_values = [self.kl_ctl.value, self.kl_ctl_rew.value]
-        torch.distributed.broadcast_object_list(kl_values, src=0)
-        if not self.trainer.is_global_zero:
-            self.kl_ctl.updateValue(kl_values[0])
-            self.kl_ctl_rew.updateValue(kl_values[1])
+        # kl_values = [self.kl_ctl.value, self.kl_ctl_rew.value]
+        # torch.distributed.broadcast_object_list(kl_values, src=0)
+        # if not self.trainer.is_global_zero:
+        #     self.kl_ctl.updateValue(kl_values[0])
+        #     self.kl_ctl_rew.updateValue(kl_values[1])
 
     def runGame(self):
-        if self.params["clear_buffer_each_game"]:
-            self.trainer_buffer.clear()
+        self.trainer_buffer.clear()
         self.agent_buffer.clear()
 
         # self is passing the model to do forward passes with
-        self.player.runGame(self, self.params['game_batch_size'])
+        self.player.runGame(self, self.params['batch_size'])
         self.agent.fillBuffer()
+
+        # may be short since not using unfinished
+        while len(self.agent_buffer) < self.params['batch_size']:
+            self.player.runGame(self, max(2, self.params['batch_size'] // 4))
+            self.agent.fillBuffer()
+
+
         self.kl_ctl_rew.kl_list = []
         scores, queries, responses, values_next, ret_cross, adv_cross, values, logprobs = self.agent_buffer.sample(
-            self.params['game_batch_size'])
+            self.params['batch_size'])
 
         # first part of original step, gets old logprobs and ref logprobs
-        bs = self.params['batch_size']
-
-        timing = dict()
-        t0 = time.time()
-
-        response_lengths = [len(r) for r in responses]
-
-        t = time.time()
-        # logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
-        ref_logprobs = \
-        self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True)[
-            "ref_logprobs"]
-
-        timing[f'time/{self.alg_name}/forward_pass'] = time.time() - t
-
-        # print("run game")
-        # print(values)
-
-        t = time.time()
-        rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
-        timing[f'time/{self.alg_name}/compute_rewards'] = time.time() - t
-
-        scores_kl = []
-        for i in range(self.params['game_batch_size']):
-            query = queries[i]
-            response = responses[i]
-            # use returns discounted across multiple transitions
-
-            score_kl = ret_cross[i].to(self.device)
-            kl_rew = torch.sum(non_score_reward[i]).to(self.device)
-            score_kl += kl_rew
-            scores_kl.append(score_kl)
-            # use only current rewards
-            # scores_batch = scores[i]
-
-        for lineItem, score_kl in zip(zip(scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs,
-                            values, rewards, non_score_reward), scores_kl):
-            self.trainer_buffer.append(lineItem, score_kl)
-
-        start_n = len(self.trainer_buffer)
-        self.trainer_buffer.reject(self.params["batch_size"] * self.trainer.world_size, threshType="top n")
-        reject_n = len(self.trainer_buffer)
-        if self.trainer.is_global_zero:
-            print("rejection ", start_n, " ", reject_n)
-            self.rejectRatio = torch.tensor(reject_n / start_n)
+        prepend = self.params["prepend"]
+        for i in range(len(scores)):
+            val = 0
+            if prepend is "score":
+                val = scores[i]
+            elif prepend is "return":
+                val = ret_cross[i]
+            text = f"This play through has a {prepend} of {val}\n{queries[i]}{responses[i]}"
+            input_ids = self.tokenizer(text, add_special_tokens=True, return_tensors="pt")["input_ids"]
+            self.trainer_buffer.append(input_ids)
 
     # data is list of strings
     def training_step(self, batch, nb_batch):
-        scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, old_logprobs, ref_logprobs, values, rewards, non_score_reward, reject_scores = batch
-        fbs = scores.shape[0]
+        input_ids = batch
+        fbs = input_ids.shape[0]
 
         loss_total = None
-        input_ids = model_input["input_ids"]
         input_mask = pad_mask(input_ids, self.tokenizer.pad_token_id)
-        query_ids = queries["input_ids"]
-        query_mask = pad_mask(query_ids, self.tokenizer.pad_token_id)
-        response_ids = responses["input_ids"]
-        response_mask = pad_mask(response_ids, self.tokenizer.pad_token_id)
 
         lmout = self.forward(input_ids, outputVals=False, outputRef=False, attention_mask=input_mask)
         logits = lmout["logits"]
@@ -387,52 +346,15 @@ class RejectionTuner(TRLTrainer):
         logprob = logprobs_from_logits(logits, targets)
 
         ce_loss_batch = torch.tensor(0, device=self.device, dtype=logprob.dtype)
-        kl_loss_batch = torch.tensor(0, device=self.device, dtype=logprob.dtype)
         train_stats = []
 
-        if not self.params["train_generation"]:
-            # print(logits_shifted.shape, targets.shape)
-            # inputs batch x classes x seq dim
-            # targets batch x seq dim
-            ce_loss_batch = F.cross_entropy(torch.transpose(logits_shifted, 1,2), targets, ignore_index=self.tokenizer.pad_token_id)
-        ce_loss = ce_loss_batch
+        ce_loss_batch = F.cross_entropy(torch.transpose(logits_shifted, 1,2), targets, ignore_index=self.tokenizer.pad_token_id)
+        loss = ce_loss_batch
 
-        for i in range(fbs):
-            querry_len = lengths[i][0]
-            gen_len = lengths[i][1]
-            total_len = lengths[i][2]
-
-            targ = targets[i:i+1, -gen_len:]
-            logit = logits_shifted[i:i+1, -gen_len:]
-            logp = logprob[i:i+1, -gen_len:]
-
-            ref_logp = ref_logprobs[i:i+1, :gen_len]
-            old_logp = old_logprobs[i:i+1, :gen_len]
-
-            if self.params["train_generation"]:
-                ce_loss = F.cross_entropy(torch.transpose(logit, 1,2), targ, ignore_index=self.tokenizer.pad_token_id)
-                ce_loss_batch += ce_loss
-
-            kl = logp - ref_logp
-            ratio = torch.exp(logp - old_logp)
-            kl = kl * ratio
-            # for stats and adaptive update
-            self.kl_ctl.kl_list.append(kl.detach().to("cpu"))
-            # mean across tokens
-            kl_loss = torch.mean(kl)
-            kl_loss_batch += kl_loss
-
-            entropy = torch.mean(entropy_from_logits(logit))
-            approxkl = .5 * torch.mean((logp - old_logp) ** 2)
-            policykl = torch.mean(logp - old_logp)
-
-            loss = ce_loss + self.kl_ctl.value * kl_loss
-
-            stats = dict(
-                loss=dict(policy=ce_loss, kl=kl_loss, total=loss),
-                policy=dict(entropy=entropy, approxkl=approxkl, policykl=policykl, ratio=ratio),
-            )
-            train_stats.append(stats_to_cpu(flatten_dict(stats)))
+        stats = dict(
+            loss=dict(total=loss)
+        )
+        train_stats.append(stats_to_cpu(flatten_dict(stats)))
 
         if self.trainer.is_global_zero:
             gathered_stats = [None for i in range(self.trainer.world_size)]
@@ -443,11 +365,7 @@ class RejectionTuner(TRLTrainer):
             for stats in gathered_stats:
                 self.all_stats.extend(stats)
 
-        kl_loss_batch /= fbs
-        if self.params["train_generation"]:
-            ce_loss_batch /= fbs
-
-        return ce_loss_batch + self.kl_ctl.value * kl_loss_batch
+        return ce_loss_batch
 
 
 def train(model_name, single_game=False):
@@ -457,7 +375,7 @@ def train(model_name, single_game=False):
     FORWARD_BATCH = 8
     LOG_FREQUENCY = 1
     SAVE_FREQUENCY = 16
-    NUM_AGENTS = 8
+    NUM_AGENTS = 1
 
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
     trainer = pl.Trainer(
@@ -476,19 +394,17 @@ def train(model_name, single_game=False):
     print("rank out of world :", trainer.global_rank, " ", trainer.world_size)
     UPDATE_FREQUENCY = max(UPDATE_FREQUENCY // trainer.world_size, 2)
     FORWARD_BATCH = max(FORWARD_BATCH // trainer.world_size, 1)
-    NUM_AGENTS = max(NUM_AGENTS // trainer.world_size, 1)
+    NUM_AGENTS = 1
 
-    params = {'batch_size': UPDATE_FREQUENCY // 2,
-              'game_batch_size': UPDATE_FREQUENCY,
+    params = {'batch_size': UPDATE_FREQUENCY,
              'save_freq': SAVE_FREQUENCY,
              'log_freq': LOG_FREQUENCY,
              "forward_batch_size": FORWARD_BATCH,
               "num_agents": NUM_AGENTS,
               "single_game": single_game}
-    reject_tuner = RejectionTuner(model_name, **params)
+    decision_tuner = DecisionTuner(model_name, **params)
 
-
-    trainer.fit(reject_tuner)
+    trainer.fit(decision_tuner)
 
 
 if __name__ == "__main__":
