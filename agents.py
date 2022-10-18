@@ -466,6 +466,7 @@ class VectorNLPAgent:
                 adm_cmd = infos["admissible_commands"][i][cmd_idx]
             # for adm_cmd in infos["admissible_commands"][i]:
                 admissible_commands_str += adm_cmd + ", "
+            adm_cmd = infos["admissible_commands"][i][len(infos["admissible_commands"][i]) - 1]
             admissible_commands_str += "or " + adm_cmd
             input_ = "{}. {}. {}. {}. What do you do? ".format(obs, infos["description"][i], infos["inventory"][i], admissible_commands_str)
             prompt = pastStates + input_
