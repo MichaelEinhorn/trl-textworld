@@ -29,10 +29,12 @@ class RollingBuffer:
 
 
 class RejectionBuffer:
-    def __init__(self, min=True):
+    def __init__(self, min=True, rank=0, world_size=1):
         self.values = []
         self.text = []
         self.min = min
+        self.rank = rank
+        self.world_size = world_size
 
     def __len__(self):
         return len(self.values)
@@ -48,46 +50,78 @@ class RejectionBuffer:
         self.text.append(t)
 
     def reject(self, p, threshType="frac"):
-        if threshType == "frac":
-            idxs = torch.argsort(torch.stack(self.values))
-            if not self.min:
-                # idxs = idxs[::-1]
-                idxs = torch.flip(idxs, [0])
-                
-            num = len(self.values * p)
-            idxs = idxs[:num]
-            for i in range(num):
-                tempText.append(self.text[idxs[i]])
-                tempVal.append(self.values[idxs[i]])
-            self.text = tempText
-            self.values = tempVal
-            
-        if threshType == "top n":
-            idxs = torch.argsort(torch.stack(self.values))
-            if not self.min:
-                # idxs = idxs[::-1]
-                idxs = torch.flip(idxs, [0])
-            idxs = idxs[:p]
-            tempText = []
-            tempVal = []
-            for i in range(p):
-                tempText.append(self.text[idxs[i]])
-                tempVal.append(self.values[idxs[i]])
-            self.text = tempText
-            self.values = tempVal
+        # gather all data to rank 0 before rejecting
+        if self.rank == 0:
+            gathered_values = [None for i in range(self.world_size)]
+            gathered_text = [None for i in range(self.world_size)]
+        else:
+            gathered_values = None
+            gathered_text = None
+        torch.distributed.gather_object(self.values, object_gather_list=gathered_values, dst=0)
+        torch.distributed.gather_object(self.text, object_gather_list=gathered_text, dst=0)
+        self.values = []
+        self.text = []
+        if self.rank == 0:
+            for val, tex in zip(gathered_values, gathered_text):
+                self.values.extend(val)
+                self.text.extend(tex)
+
+            if threshType == "frac":
+                idxs = torch.argsort(torch.stack(self.values))
+                if not self.min:
+                    # idxs = idxs[::-1]
+                    idxs = torch.flip(idxs, [0])
+
+                num = len(self.values * p)
+                idxs = idxs[:num]
+                for i in range(num):
+                    tempText.append(self.text[idxs[i]])
+                    tempVal.append(self.values[idxs[i]])
+                self.text = tempText
+                self.values = tempVal
+
+            if threshType == "top n":
+                idxs = torch.argsort(torch.stack(self.values))
+                if not self.min:
+                    # idxs = idxs[::-1]
+                    idxs = torch.flip(idxs, [0])
+                idxs = idxs[:p]
+                tempText = []
+                tempVal = []
+                for i in range(p):
+                    tempText.append(self.text[idxs[i]])
+                    tempVal.append(self.values[idxs[i]])
+                self.text = tempText
+                self.values = tempVal
 
     def clear(self):
         self.values = []
         self.text = []
 
     def sample(self, batch_size):
-        idxs = np.random.choice(len(self.values), batch_size, replace=False)
-        tempText = []
-        tempVal = []
-        for i in range(batch_size):
-            tempText.append(self.text[idxs[i]])
-            tempVal.append(self.values[idxs[i]])
-        return tempText, tempVal
+        # all samples are on rank 0, shuffle them there and then broadcast to other processes
+        tmpArr = [None, None]
+        if self.rank == 0:
+            idxs = np.random.choice(len(self.values), batch_size * self.world_size, replace=False)
+            tempText = []
+            tempVal = []
+            for i in range(batch_size * self.world_size):
+                tempText.append(self.text[idxs[i]])
+                tempVal.append(self.values[idxs[i]])
+            tmpArr = [tempText, tempVal]
+
+        torch.distributed.broadcast_object_list(tmpArr, src=0)
+
+        tempText = tmpArr[0]
+        tempVal = tmpArr[1]
+
+        text = []
+        val = []
+        for i in range(self.rank, batch_size * self.world_size, self.world_size):
+            text.append(tempText[i])
+            val.append(tempVal[i])
+
+        return text, val
 
 
 class ExperienceSourceDataset(IterableDataset):
@@ -141,14 +175,25 @@ class ReplayBuffer:
 
 
 class RLDataset(IterableDataset):
-    def __init__(self, buffer: ReplayBuffer, sample_size: int = 200):
+    def __init__(self, buffer, sample_size: int = 200, rank=0, world_size=1):
         self.buffer = buffer
         self.sample_size = sample_size
+        self.rank = rank
+        self.world_size = world_size
 
     def __iter__(self):
+        # objList = [None]
+        # if self.rank == 0:
+        #     data = self.buffer.sample(self.sample_size)
+        #     objList = [data]
+        #
+        # torch.distributed.broadcast_object_list(objList, src=0)
+        # data = objList[0]
+
         data = self.buffer.sample(self.sample_size)
+
         scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
-        for i in range(0, len(scores)):
+        for i in range(len(scores)):
             # padding matches the batches but this means padded querry + padded response is not padded (querry + response)
             model_input = torch.cat([queries[i], responses[i]])
             lengths = (queries[i].shape[0], responses[i].shape[0], model_input.shape[0])
@@ -166,7 +211,8 @@ class RLDatasetCollator():
         # print(lengths)
         # print(logprobs[0].shape, ref_logprobs[0].shape)
         # print(len(logprobs), logprobs[0].shape)
-        # print(len(ref_logprobs), ref_logprobs[0].shape)
+        # print(len(queries), queries[0].shape)
+        
         return (torch.tensor(scores),
                 self.text_collator(queries),
                 self.text_collator(responses),
@@ -181,6 +227,25 @@ class RLDatasetCollator():
                 padded_stack(rewards),
                 padded_stack(non_score_reward)
                 )
+
+class DecisionDataset(IterableDataset):
+    def __init__(self, buffer, sample_size: int = 200):
+        self.buffer = buffer
+        self.sample_size = sample_size
+
+    def __iter__(self):
+        input_ids = self.buffer.sample(self.sample_size)
+        for i in range(len(input_ids)):
+            yield input_ids[i]
+
+class DecisionDatasetCollator():
+    def __init__(self, text_collator=None):
+        self.text_collator = text_collator
+
+    def __call__(self, input_ids):
+        # for inp in input_ids:
+            # print(inp.shape)
+        return self.text_collator(input_ids)
 
 class LineBuffer:
     """
@@ -220,14 +285,26 @@ class LineDataset(IterableDataset):
             yield lines[i]
 
 class RejectDataset(IterableDataset):
-    def __init__(self, buffer: RejectionBuffer, sample_size: int = 200):
+    def __init__(self, buffer: RejectionBuffer, sample_size=200, rank=0, world_size=1):
         self.buffer = buffer
         self.sample_size = sample_size
+        self.rank = rank
+        self.world_size = world_size
 
     def __iter__(self):
+#         objList = [None, None]
+#         if self.rank == 0:
+#             data, reject_scores = self.buffer.sample(self.sample_size)
+#             objList = [data, reject_scores]
+        
+#         torch.distributed.broadcast_object_list(objList, src=0)
+#         data = objList[0]
+#         reject_scores = objList[1]
+
         data, reject_scores = self.buffer.sample(self.sample_size)
+
         scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
-        for i in range(0, len(scores)):
+        for i in range(len(scores)):
             # padding matches the batches but this means padded querry + padded response is not padded (querry + response)
             model_input = torch.cat([queries[i], responses[i]])
             lengths = (queries[i].shape[0], responses[i].shape[0], model_input.shape[0])

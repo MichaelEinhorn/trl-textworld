@@ -27,9 +27,11 @@ from torchinfo import summary
 
 from valueHead import ValueHead
 from games import VectorPlayer, getEnvs
+from agents import NLPAgent, VectorNLPAgent
 
 from transformers import DataCollatorForLanguageModeling
 from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
+from transformers.deepspeed import HfDeepSpeedConfig
 
 from core import (logprobs_from_logits,
                   whiten,
@@ -65,6 +67,9 @@ class AdaptiveKLController:
         mult = 1 + proportional_error * n_steps / self.horizon
         self.value *= mult
 
+    def updateValue(self, v):
+        self.value = v
+
 
 class FixedKLController:
     """Fixed KL controller."""
@@ -76,52 +81,18 @@ class FixedKLController:
     def update(self, current, n_steps):
         pass
 
+    def updateValue(self, v):
+        pass
+
 
 class TRLTrainer(pl.LightningModule):
-    def __init__(self, model_name, player, buffer, agent, **params):
+    def __init__(self, model_name, **params):
         super().__init__()
 
         self.params = self.default_params
         self.params.update(params)
         self.alg_name = self.params["alg_name"]
-
-        self.agent_buffer = buffer
-
-        self.player = player
-
-        # gpt2 and gpt2-xl
-        if 'gpt2' in model_name:
-            from transformers import GPT2Tokenizer, GPT2Model, GPT2LMHeadModel
-            self.model = GPT2LMHeadModel.from_pretrained(model_name)
-            self.ref_model = GPT2LMHeadModel.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-        elif 'gpt-neox' in model_name:
-            from transformers import GPTNeoXForCausalLM, GPTNeoXTokenizerFast
-            self.model = GPTNeoXForCausalLM.from_pretrained(model_name)
-            self.ref_model = GPTNeoXForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPTNeoXTokenizerFast.from_pretrained(model_name)
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-        elif 'gpt-j' in model_name:
-            from transformers import GPT2Tokenizer, GPTJForCausalLM
-            self.model = GPTJForCausalLM.from_pretrained(model_name)
-            self.ref_model = GPTJForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2', padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-        elif 'gpt-neo' in model_name:
-            from transformers import GPTNeoForCausalLM, GPT2Tokenizer
-            self.model = GPTNeoForCausalLM.from_pretrained(model_name)
-            self.ref_model = GPTNeoForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-
-        print(self.model.config.torch_dtype)
-        summary(self.model)
-        self.config = self.model.config
-
-        self.agent = agent
-
-        self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
+        self.model_name = model_name
 
         if self.params['adap_kl_ctrl']:
             self.kl_ctl = AdaptiveKLController(self.params['init_kl_coef'],
@@ -145,7 +116,7 @@ class TRLTrainer(pl.LightningModule):
         self.game_time = 0
 
     def getDevice(self):
-        return self.device
+        return self.device    
 
     @property
     def deepspeed_offload(self) -> bool:
@@ -155,17 +126,90 @@ class TRLTrainer(pl.LightningModule):
             return config.get('offload_optimizer') or config.get('offload_param')
         return False
 
-    # def on_train_start(self):
-    #     self.runGame()
+    def setup(self, stage=None):
+        self.dschf = HfDeepSpeedConfig(self.trainer.strategy.config)
+        """
+        This hook allows us to setup layers within a context that auto shards the model as it is created.
+        Useful for very large models, where we want to shard instantly.
+        """
+        model_name = self.model_name
+        # gpt2 and gpt2-xl
+        if 'gpt2' in model_name:
+            from transformers import GPT2Tokenizer, GPT2Model, GPT2LMHeadModel
+            self.model = GPT2LMHeadModel.from_pretrained(model_name)
+            if self.params["reference"]:
+                self.ref_model = GPT2LMHeadModel.from_pretrained(model_name)
+            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
+            self.tokenizer.pad_token = self.tokenizer.unk_token
+        elif 'gpt-neox' in model_name:
+            from transformers import GPTNeoXForCausalLM, GPTNeoXTokenizerFast
+            self.model = GPTNeoXForCausalLM.from_pretrained(model_name)
+            if self.params["reference"]:
+                self.ref_model = GPTNeoXForCausalLM.from_pretrained(model_name)
+            self.tokenizer = GPTNeoXTokenizerFast.from_pretrained(model_name, padding_side='left')
+            self.tokenizer.pad_token = self.tokenizer.unk_token
+        elif 'gpt-j' in model_name:
+            from transformers import GPT2Tokenizer, GPTJForCausalLM
+            self.model = GPTJForCausalLM.from_pretrained(model_name)
+            if self.params["reference"]:
+                self.ref_model = GPTJForCausalLM.from_pretrained(model_name)
+            self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2', padding_side='left')
+            self.tokenizer.pad_token = self.tokenizer.unk_token
+        # neox already caught
+        elif 'gpt-neo' in model_name:
+            from transformers import GPTNeoForCausalLM, GPT2Tokenizer
+            self.model = GPTNeoForCausalLM.from_pretrained(model_name)
+            if self.params["reference"]:
+                self.ref_model = GPTNeoForCausalLM.from_pretrained(model_name)
+            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
+            self.tokenizer.pad_token = self.tokenizer.unk_token
+        else:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            self.model = AutoModelForCausalLM.from_pretrained(model_name)
+            if self.params["reference"]:
+                self.ref_model = AutoModelForCausalLM.from_pretrained(model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
+            self.tokenizer.pad_token = self.tokenizer.unk_token
+
+
+        # print(self.model.config.torch_dtype)
+        # summary(self.model)
+        
+        if self.trainer.is_global_zero:
+            getEnvs()
+            print("generated envs")
+        torch.distributed.barrier()
+        
+        if self.params["single_game"]:
+            # agent = NLPAgent(buffer, humanTurns=0)
+            self.agent = VectorNLPAgent(self.agent_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
+                                   world_size=self.trainer.world_size, **self.agentKWArgs)
+            print("Training")
+            self.agent.train()  # Tell the agent it should update its parameters.
+            # player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
+            self.player = VectorPlayer(self.agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False,
+                                  num_agents=self.params["num_agents"],
+                                  rank=self.trainer.global_rank, world_size=self.trainer.world_size, **self.playerKWArgs)
+
+        else:
+            self.agent = VectorNLPAgent(self.agent_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
+                                   world_size=self.trainer.world_size, **self.agentKWArgs)
+            print("Training on 100 games")
+            self.agent.train()  # Tell the agent it should update its parameters.
+            self.player = VectorPlayer(self.agent, "./training_games/", verbose=False, num_agents=self.params["num_agents"],
+                                  rank=self.trainer.global_rank, world_size=self.trainer.world_size, **self.playerKWArgs)  # Each game will be seen 5 times.
+    
     def on_train_epoch_start(self):
         # train on the same data epochs per game times before generating a new set
         if self.current_epoch % self.params['epochs_per_game'] == 0:
             game_time = time.time()
             self.runGame()
             self.game_time = time.time() - game_time
-            print("game time ", self.game_time)
-            
+            # print("game time ", self.game_time)
+
         self.epoch_time = time.time()
+        # print("rank ", self.trainer.global_rank, " arrived at epoch barrier")
+        torch.distributed.barrier()
 
     def compute_rewards(self, scores, logprobs, ref_logprobs):
         """Compute per token rewards from scores and KL-penalty."""

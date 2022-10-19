@@ -7,6 +7,9 @@ import numpy as np
 
 WANDB_PADDING = -1
 
+def getKW(**kwargs):
+    return kwargs
+
 def flatten_dict(nested, sep='/'):
     """Flatten dictionary and concatenate nested keys with separator."""
 

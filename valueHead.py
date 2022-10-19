@@ -7,20 +7,16 @@ from torch.nn import Identity
 class ValueHead(nn.Module):
     """The ValueHead class implements a head for GPT2 that returns a scalar for each output token."""
 
-    def __init__(self, config):
+    def __init__(self, model_name):
         super().__init__()
+        
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(model_name)
+        config.num_labels = 1
+            
         self.detach_head = False
-        self.summary_type = config.summary_type if hasattr(config, "summary_type") else "last"
-        if self.summary_type == "attn":
-            raise NotImplementedError
 
-        self.summary = Identity()
-        if hasattr(config, "summary_use_proj") and config.summary_use_proj:
-            if hasattr(config, "summary_proj_to_labels") and config.summary_proj_to_labels and config.num_labels > 0:
-                num_classes = config.num_labels
-            else:
-                num_classes = config.hidden_size
-            self.summary = nn.Linear(config.hidden_size, num_classes)
+        self.summary = nn.Linear(config.hidden_size, 1)
 
         self.activation = Identity()
         if hasattr(config, "summary_activation") and config.summary_activation == "tanh":
