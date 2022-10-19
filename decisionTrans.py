@@ -87,6 +87,7 @@ class DecisionTuner(TRLTrainer):
         return self.forward(input_ids, **kwargs)
     
     def __dataloader(self) -> DataLoader:
+        self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
         self.trainer_buffer = LineBuffer(self.params['batch_size'])
         dataset = DecisionDataset(self.trainer_buffer, self.params['batch_size'])
         dataloader = DataLoader(dataset=dataset,
