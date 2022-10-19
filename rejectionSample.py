@@ -94,7 +94,7 @@ class RejectionTuner(TRLTrainer):
         self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
         self.trainer_buffer = RejectionBuffer(min=False, rank=self.trainer.global_rank,
                                               world_size=self.trainer.world_size)
-        dataset = RejectDataset(self.trainer_buffer, self.params['batch_size'], rank=self.trainer.global_rank, world_size=self.trainer.world_size)
+        dataset = RejectDataset(self.trainer_buffer, sample_size=self.params['batch_size'], rank=self.trainer.global_rank, world_size=self.trainer.world_size)
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=self.params['forward_batch_size'],
                                 collate_fn=RejectDatasetCollator(text_collator=self.data_collator)

@@ -102,7 +102,7 @@ class RejectionBuffer:
         # all samples are on rank 0, shuffle them there and then broadcast to other processes
         tmpArr = [None, None]
         if self.rank == 0:
-            idxs = np.random.choice(len(self.values), batch_size, replace=False)
+            idxs = np.random.choice(len(self.values), batch_size * self.world_size, replace=False)
             tempText = []
             tempVal = []
             for i in range(batch_size * self.world_size):
@@ -119,7 +119,7 @@ class RejectionBuffer:
         val = []
         for i in range(self.rank, batch_size * self.world_size, self.world_size):
             text.append(tempText[i])
-            val.append(val[i])
+            val.append(tempVal[i])
 
         return text, val
 
@@ -282,21 +282,21 @@ class LineDataset(IterableDataset):
             yield lines[i]
 
 class RejectDataset(IterableDataset):
-    def __init__(self, buffer: RejectionBuffer, sample_size: int = 200, rank=0, world_size=1):
+    def __init__(self, buffer: RejectionBuffer, sample_size=200, rank=0, world_size=1):
         self.buffer = buffer
         self.sample_size = sample_size
         self.rank = rank
         self.world_size = world_size
 
     def __iter__(self):
-        # objList = [None, None]
-        # if self.rank == 0:
-        #     data, reject_scores = self.buffer.sample(self.sample_size)
-        #     objList = [data, reject_scores]
-        #
-        # torch.distributed.broadcast_object_list(objList, src=0)
-        # data = objList[0]
-        # reject_scores = objList[1]
+#         objList = [None, None]
+#         if self.rank == 0:
+#             data, reject_scores = self.buffer.sample(self.sample_size)
+#             objList = [data, reject_scores]
+        
+#         torch.distributed.broadcast_object_list(objList, src=0)
+#         data = objList[0]
+#         reject_scores = objList[1]
 
         data, reject_scores = self.buffer.sample(self.sample_size)
 
