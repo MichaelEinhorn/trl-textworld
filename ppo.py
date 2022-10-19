@@ -519,7 +519,7 @@ def train(model_name, single_game=True):
     UPDATE_FREQUENCY = 64
     FORWARD_BATCH = 8
     LOG_FREQUENCY = 1
-    SAVE_FREQUENCY = 16
+    SAVE_FREQUENCY = 1
     NUM_AGENTS = 8
 
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
