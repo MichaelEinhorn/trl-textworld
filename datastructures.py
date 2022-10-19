@@ -211,7 +211,8 @@ class RLDatasetCollator():
         # print(lengths)
         # print(logprobs[0].shape, ref_logprobs[0].shape)
         # print(len(logprobs), logprobs[0].shape)
-        # print(len(ref_logprobs), ref_logprobs[0].shape)
+        # print(len(queries), queries[0].shape)
+        
         return (torch.tensor(scores),
                 self.text_collator(queries),
                 self.text_collator(responses),
@@ -242,6 +243,8 @@ class DecisionDatasetCollator():
         self.text_collator = text_collator
 
     def __call__(self, input_ids):
+        # for inp in input_ids:
+            # print(inp.shape)
         return self.text_collator(input_ids)
 
 class LineBuffer:

@@ -76,7 +76,7 @@ class DecisionTuner(TRLTrainer):
         self.trainer_buffer = None
         self.agent_buffer = ReplayBuffer(self.params["batch_size"])
 
-        self.playerKWArgs = getKW(decision=True)
+        self.playerKWArgs = getKW(decisionTrans=True)
         self.agentKWArgs = getKW(useUnfinished=True, GAMMA=self.params["game_gamma"], MEMORY_LEN=self.params["few_shot"],
                                  testCountLetters=('e', 'E'))
 
@@ -322,17 +322,17 @@ class DecisionTuner(TRLTrainer):
         prepend = self.params["prepend"]
         for i in range(len(scores)):
             val = 0
-            if prepend is "score":
+            if prepend == "score":
                 val = scores[i]
-            elif prepend is "return":
+            elif prepend == "return":
                 val = ret_cross[i]
             text = f"This play through has a {prepend} of {val}\n{queries[i]}{responses[i]}"
-            input_ids = self.tokenizer(text, add_special_tokens=True, return_tensors="pt")["input_ids"]
-            self.trainer_buffer.append(input_ids)
+            input_ids = self.tokenizer(text, add_special_tokens=True, return_tensors="pt")['input_ids']
+            self.trainer_buffer.append(input_ids[0])
 
     # data is list of strings
     def training_step(self, batch, nb_batch):
-        input_ids = batch
+        input_ids = batch['input_ids']
         fbs = input_ids.shape[0]
 
         loss_total = None

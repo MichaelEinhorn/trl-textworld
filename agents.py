@@ -532,7 +532,8 @@ class VectorNLPAgent:
                             self.rewValStat.append([lightmodel.current_epoch, reward, 0])
 
                         self.transitions[i].append(
-                            [reward, prompt, action, 0, False, 0, 0])
+                            [reward, prompt, action, 0, False, [0], [0]])
+                return actionList
 
         model_input = lightmodel.tokenizer(promptList, add_special_tokens=True, return_tensors="pt", padding=True, return_attention_mask=True)
         input_ids = model_input["input_ids"]

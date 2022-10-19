@@ -111,8 +111,8 @@ class VectorPlayer:
         if "exTurns" in kwargs:
             self.exTurns = kwargs["exTurns"]
         self.decisionTrans = False
-        if "decision" in kwargs:
-            self.decisionTrans = True
+        if "decisionTrans" in kwargs:
+            self.decisionTrans = kwargs["decisionTrans"]
 
         self.agent = agent
         self.num_agents = num_agents
