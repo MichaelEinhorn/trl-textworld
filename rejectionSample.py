@@ -454,16 +454,16 @@ def train(model_name, single_game=False):
     from time import time
 
     UPDATE_FREQUENCY = 64
-    FORWARD_BATCH = 8
+    FORWARD_BATCH = 4
     LOG_FREQUENCY = 1
     SAVE_FREQUENCY = 16
-    NUM_AGENTS = 8
+    NUM_AGENTS = 4
 
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
     trainer = pl.Trainer(
         enable_checkpointing=False,
         logger=False,
-        accelerator='gpu', devices=8,
+        accelerator='gpu', devices=1,
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(
@@ -497,8 +497,8 @@ if __name__ == "__main__":
     seed_everything(42)
 
     # model_name = 'gpt2'
-    model_name = 'EleutherAI/gpt-j-6B'
-    # model_name = 'EleutherAI/gpt-neo-1.3B'
+    # model_name = 'EleutherAI/gpt-j-6B'
+    model_name = 'EleutherAI/gpt-neo-1.3B'
     # model_name = "EleutherAI/gpt-neox-20b"
     single_game = False
 
