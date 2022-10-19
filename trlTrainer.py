@@ -32,6 +32,9 @@ from agents import NLPAgent, VectorNLPAgent
 from transformers import DataCollatorForLanguageModeling
 from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
 from transformers.deepspeed import HfDeepSpeedConfig
+from lightning_transformers.utilities.deepspeed import enable_transformers_pretrained_deepspeed_sharding
+
+from lightning_transformers.task.nlp.language_modeling import LanguageModelingTransformer
 
 from core import (logprobs_from_logits,
                   whiten,
@@ -86,7 +89,7 @@ class FixedKLController:
 
 
 class TRLTrainer(pl.LightningModule):
-    def __init__(self, model_name, **params):
+    def __init__(self, model_name=None, **params):
         super().__init__()
         self.save_hyperparameters()
 
@@ -117,7 +120,10 @@ class TRLTrainer(pl.LightningModule):
         self.game_time = 0
 
     def getDevice(self):
-        return self.device    
+        return self.device
+    
+    def test_step(self, batch, nb_batch):
+        pass
 
     @property
     def deepspeed_offload(self) -> bool:
@@ -127,47 +133,26 @@ class TRLTrainer(pl.LightningModule):
             return config.get('offload_optimizer') or config.get('offload_param')
         return False
 
-    def on_save_checkpoint(self, checkpoint):
-        print(checkpoint.keys())
+    # def on_save_checkpoint(self, checkpoint):
+    #     keyList = list(checkpoint['state_dict'].keys())
+    #     for k in keyList:
+    #         if "ref_model" in k:
+    #             del checkpoint['state_dict'][k]
+    #     # print(checkpoint.keys())
+    #     # print(checkpoint['state_dict'].keys())
 
     def setup(self, stage=None):
-        self.dschf = HfDeepSpeedConfig(self.trainer.strategy.config)
+        # self.dschf = HfDeepSpeedConfig(self.trainer.strategy.config)
+        enable_transformers_pretrained_deepspeed_sharding(self)
+        from transformers import AutoModelForCausalLM, AutoTokenizer
         model_name = self.model_name
-        # gpt2 and gpt2-xl
-        if 'gpt2' in model_name:
-            from transformers import GPT2Tokenizer, GPT2Model, GPT2LMHeadModel
-            self.model = GPT2LMHeadModel.from_pretrained(model_name)
-            if self.params["reference"]:
-                self.ref_model = GPT2LMHeadModel.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-        elif 'gpt-neox' in model_name:
-            from transformers import GPTNeoXForCausalLM, GPTNeoXTokenizerFast
-            self.model = GPTNeoXForCausalLM.from_pretrained(model_name)
-            if self.params["reference"]:
-                self.ref_model = GPTNeoXForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPTNeoXTokenizerFast.from_pretrained(model_name, padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-        elif 'gpt-j' in model_name:
-            from transformers import GPT2Tokenizer, GPTJForCausalLM
-            self.model = GPTJForCausalLM.from_pretrained(model_name)
-            if self.params["reference"]:
-                self.ref_model = GPTJForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2', padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-        # neox already caught
-        elif 'gpt-neo' in model_name:
-            from transformers import GPTNeoForCausalLM, GPT2Tokenizer
-            self.model = GPTNeoForCausalLM.from_pretrained(model_name)
-            if self.params["reference"]:
-                self.ref_model = GPTNeoForCausalLM.from_pretrained(model_name)
-            self.tokenizer = GPT2Tokenizer.from_pretrained(model_name, padding_side='left')
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-        else:
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+        if not hasattr(self, "model"):
+            # gpt2 and gpt2-xl
             self.model = AutoModelForCausalLM.from_pretrained(model_name)
+        if not hasattr(self, "ref_model"):
             if self.params["reference"]:
                 self.ref_model = AutoModelForCausalLM.from_pretrained(model_name)
+        if not hasattr(self, "tokenizer"):
             self.tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
             self.tokenizer.pad_token = self.tokenizer.unk_token
 
@@ -199,6 +184,17 @@ class TRLTrainer(pl.LightningModule):
             self.player = VectorPlayer(self.agent, "./training_games/", verbose=False, num_agents=self.params["num_agents"],
                                   rank=self.trainer.global_rank, world_size=self.trainer.world_size, **self.playerKWArgs)  # Each game will be seen 5 times.
     
+    def on_test_epoch_start(self):
+        # train on the same data epochs per game times before generating a new set
+        game_time = time.time()
+        self.runGame()
+        self.game_time = time.time() - game_time
+        # print("game time ", self.game_time)
+
+        self.epoch_time = time.time()
+        # print("rank ", self.trainer.global_rank, " arrived at epoch barrier")
+        torch.distributed.barrier()
+        
     def on_train_epoch_start(self):
         # train on the same data epochs per game times before generating a new set
         if self.current_epoch % self.params['epochs_per_game'] == 0:

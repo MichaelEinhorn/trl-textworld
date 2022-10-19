@@ -81,8 +81,8 @@ class PPOTrainer(TRLTrainer):
         "few_shot": 1
     }
 
-    def __init__(self, model_name, **params):
-        super().__init__(model_name, **params)
+    def __init__(self, model_name=None, **params):
+        super().__init__(model_name=model_name, **params)
 
         self.trainer_buffer = None
         
@@ -230,6 +230,9 @@ class PPOTrainer(TRLTrainer):
 
     def train_dataloader(self) -> DataLoader:
         """Get train loader"""
+        return self.__dataloader()
+    
+    def test_dataloader(self) -> DataLoader:
         return self.__dataloader()
 
     def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False, attention_mask=None, outputLogits=True):
@@ -513,7 +516,7 @@ class PPOTrainer(TRLTrainer):
         return pg_loss, self.params['vf_coef'] * vf_loss, self.kl_ctl.value * kl_loss, stats_to_cpu(flatten_dict(stats))
 
 
-def train(model_name, single_game=True):
+def train(model_name=None, single_game=True):
     from time import time
 
     UPDATE_FREQUENCY = 64
@@ -548,7 +551,7 @@ def train(model_name, single_game=True):
         print("Params per thread: update freq ", UPDATE_FREQUENCY, " forward batch ", FORWARD_BATCH, " num agents ", NUM_AGENTS)
 
     ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': FORWARD_BATCH, "log_freq": LOG_FREQUENCY, "num_agents": NUM_AGENTS, "single_game": single_game}
-    ppo_trainer = PPOTrainer(model_name, **ppo_config)
+    ppo_trainer = PPOTrainer(model_name=model_name, **ppo_config)
 
     trainer.fit(ppo_trainer)
 
@@ -558,13 +561,13 @@ if __name__ == "__main__":
     
     seed_everything(42)
 
-    # model_name = 'gpt2'
+    model_name = 'gpt2'
     # model_name = 'EleutherAI/gpt-j-6B'
-    model_name = 'EleutherAI/gpt-neo-1.3B'
+    # model_name = 'EleutherAI/gpt-neo-1.3B'
     # model_name = "EleutherAI/gpt-neox-20b"
     single_game = False
     
     Path("stats").mkdir(parents=True, exist_ok=True)
     Path("checkpoints").mkdir(parents=True, exist_ok=True)
 
-    train(model_name, single_game=single_game)
+    train(model_name=model_name, single_game=single_game)
