@@ -88,6 +88,7 @@ class FixedKLController:
 class TRLTrainer(pl.LightningModule):
     def __init__(self, model_name, **params):
         super().__init__()
+        self.save_hyperparameters()
 
         self.params = self.default_params
         self.params.update(params)
@@ -126,12 +127,11 @@ class TRLTrainer(pl.LightningModule):
             return config.get('offload_optimizer') or config.get('offload_param')
         return False
 
+    def on_save_checkpoint(self, checkpoint):
+        print(checkpoint.keys())
+
     def setup(self, stage=None):
         self.dschf = HfDeepSpeedConfig(self.trainer.strategy.config)
-        """
-        This hook allows us to setup layers within a context that auto shards the model as it is created.
-        Useful for very large models, where we want to shard instantly.
-        """
         model_name = self.model_name
         # gpt2 and gpt2-xl
         if 'gpt2' in model_name:

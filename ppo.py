@@ -110,12 +110,12 @@ class PPOTrainer(TRLTrainer):
                     ctl.kl_list.extend(kl)
 
         if self.trainer.is_global_zero:
-            if self.current_epoch % self.params['save_freq'] == 0:
-                t = time.time()
-                self.model.save_pretrained(f"checkpoints/{self.alg_name}_model_epoch_{self.current_epoch}")
-                torch.save(self.valueHead.state_dict(),
-                           f"checkpoints/{self.alg_name}_valueHead_epoch_{self.current_epoch}.pt")
-                self.saveModelTime = time.time() - t
+            # if self.current_epoch % self.params['save_freq'] == 0:
+            #     t = time.time()
+            #     self.model.save_pretrained(f"checkpoints/{self.alg_name}_model_epoch_{self.current_epoch}")
+            #     torch.save(self.valueHead.state_dict(),
+            #                f"checkpoints/{self.alg_name}_valueHead_epoch_{self.current_epoch}.pt")
+            #     self.saveModelTime = time.time() - t
 
             if self.current_epoch % self.params['log_freq'] == 0:
                 data = self.trainer_buffer.sample(self.params['batch_size'])
@@ -523,8 +523,11 @@ def train(model_name, single_game=True):
     NUM_AGENTS = 8
 
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
+    from pytorch_lightning.callbacks import ModelCheckpoint
+    checkpoint_callback = ModelCheckpoint(dirpath="checkpoints/", filename="ppo-{epoch:02d}",
+                                          every_n_epochs=SAVE_FREQUENCY, save_weights_only=True)
     trainer = pl.Trainer(
-        enable_checkpointing=False,
+        enable_checkpointing=True,
         logger=False,
         accelerator='gpu', devices=1,
         max_epochs=500,
@@ -534,6 +537,7 @@ def train(model_name, single_game=True):
             offload_optimizer=True,
             offload_parameters=True 
         ),
+        callbacks=[checkpoint_callback]
     )
     # print("rank out of world :", trainer.global_rank, " " , trainer.world_size)
     UPDATE_FREQUENCY = max(UPDATE_FREQUENCY // trainer.world_size, 1)
@@ -543,7 +547,7 @@ def train(model_name, single_game=True):
     if trainer.is_global_zero:
         print("Params per thread: update freq ", UPDATE_FREQUENCY, " forward batch ", FORWARD_BATCH, " num agents ", NUM_AGENTS)
 
-    ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': FORWARD_BATCH, "log_freq": LOG_FREQUENCY, "save_freq": SAVE_FREQUENCY, "num_agents": NUM_AGENTS, "single_game": single_game}
+    ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': FORWARD_BATCH, "log_freq": LOG_FREQUENCY, "num_agents": NUM_AGENTS, "single_game": single_game}
     ppo_trainer = PPOTrainer(model_name, **ppo_config)
 
     trainer.fit(ppo_trainer)
