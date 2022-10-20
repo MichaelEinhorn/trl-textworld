@@ -263,3 +263,25 @@ class TRLTrainer(pl.LightningModule):
             # print(k, v)
             stats[f'{self.alg_name}/{k}'] = torch.mean(v, axis=0)
         return stats
+    
+def getTrainer(**kwargs):
+    SAVE_FREQUENCY = 1
+    from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
+    from pytorch_lightning.callbacks import ModelCheckpoint
+    checkpoint_callback = ModelCheckpoint(dirpath="checkpoints/", filename="ppo-{epoch:02d}",
+                                          every_n_epochs=SAVE_FREQUENCY, save_weights_only=True)
+    trainer = pl.Trainer(
+        enable_checkpointing=True,
+        logger=False,
+        accelerator='gpu', devices=2,
+        max_epochs=500,
+        precision=16,
+        strategy=DeepSpeedStrategy(
+            stage=3,
+            offload_optimizer=False,
+            offload_parameters=False 
+        ),
+        callbacks=[checkpoint_callback]
+    )
+    return trainer
+    

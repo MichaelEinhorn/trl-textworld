@@ -457,28 +457,16 @@ def train(model_name, single_game=False):
     UPDATE_FREQUENCY = 64
     FORWARD_BATCH = 4
     LOG_FREQUENCY = 1
-    SAVE_FREQUENCY = 16
     NUM_AGENTS = 4
 
-    from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
-    trainer = pl.Trainer(
-        enable_checkpointing=False,
-        logger=False,
-        accelerator='gpu', devices=1,
-        max_epochs=500,
-        precision=16,
-        strategy=DeepSpeedStrategy(
-            stage=3,
-            offload_optimizer=True,
-            offload_parameters=True
-        ),
-    )
+    trainer = trlTrainer.getTrainer()
 
     print("rank out of world :", trainer.global_rank, " ", trainer.world_size)
     UPDATE_FREQUENCY = max(UPDATE_FREQUENCY // trainer.world_size, 2)
     FORWARD_BATCH = max(FORWARD_BATCH // trainer.world_size, 1)
     NUM_AGENTS = max(NUM_AGENTS // trainer.world_size, 1)
 
+    
     params = {'batch_size': UPDATE_FREQUENCY // 2,
               'game_batch_size': UPDATE_FREQUENCY,
              'save_freq': SAVE_FREQUENCY,

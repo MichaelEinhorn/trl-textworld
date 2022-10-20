@@ -58,6 +58,6 @@ if __name__ == "__main__":
     ppo_trainer = PPOTrainer(model_name=model_name, **ppo_config)
     
     trainer.test(model=ppo_trainer, ckpt_path=save_path)
-    summary(ppo_trainer.model)
+    # summary(ppo_trainer.model)
 
     # trainer.test(ppo_trainer)

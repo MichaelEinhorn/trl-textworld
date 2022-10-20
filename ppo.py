@@ -33,6 +33,7 @@ from agents import NLPAgent, VectorNLPAgent
 
 from transformers import DataCollatorForLanguageModeling
 
+import trlTrainer
 from trlTrainer import TRLTrainer
 
 from core import (logprobs_from_logits,
@@ -522,26 +523,9 @@ def train(model_name=None, single_game=True):
     UPDATE_FREQUENCY = 64
     FORWARD_BATCH = 8
     LOG_FREQUENCY = 1
-    SAVE_FREQUENCY = 1
     NUM_AGENTS = 8
 
-    from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
-    from pytorch_lightning.callbacks import ModelCheckpoint
-    checkpoint_callback = ModelCheckpoint(dirpath="checkpoints/", filename="ppo-{epoch:02d}",
-                                          every_n_epochs=SAVE_FREQUENCY, save_weights_only=True)
-    trainer = pl.Trainer(
-        enable_checkpointing=True,
-        logger=False,
-        accelerator='gpu', devices=1,
-        max_epochs=500,
-        precision=16,
-        strategy=DeepSpeedStrategy(
-            stage=3,
-            offload_optimizer=True,
-            offload_parameters=True 
-        ),
-        callbacks=[checkpoint_callback]
-    )
+    trainer = trlTrainer.getTrainer()
     # print("rank out of world :", trainer.global_rank, " " , trainer.world_size)
     UPDATE_FREQUENCY = max(UPDATE_FREQUENCY // trainer.world_size, 1)
     FORWARD_BATCH = max(FORWARD_BATCH // trainer.world_size, 1)
@@ -561,9 +545,9 @@ if __name__ == "__main__":
     
     seed_everything(42)
 
-    model_name = 'gpt2'
+    # model_name = 'gpt2'
     # model_name = 'EleutherAI/gpt-j-6B'
-    # model_name = 'EleutherAI/gpt-neo-1.3B'
+    model_name = 'EleutherAI/gpt-neo-1.3B'
     # model_name = "EleutherAI/gpt-neox-20b"
     single_game = False
     
