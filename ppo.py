@@ -96,7 +96,8 @@ class PPOTrainer(TRLTrainer):
     # def setup(self, stage=None):
     #     super().setup(stage=stage)
     def configure_sharded_model(self):
-        self.valueHead = ValueHead(self.model_name)
+        if not hasattr(self, "valueHead"):
+            self.valueHead = ValueHead(self.model_name)
 
     def on_train_epoch_end(self):
         for ctl in [self.kl_ctl, self.kl_ctl_rew]:
