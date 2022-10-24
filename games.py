@@ -142,3 +142,12 @@ class VectorPlayer:
             else:
                 msg = "  \tavg. steps: {:5.1f}; avg. score: {:4.1f} / {}."
                 print(msg.format(self.nb_moves/self.no_episode, np.mean(self.avg_scores), self.infos["max_score"]))
+
+# human player
+if __name__ == "__main__":
+    from agents import HumanAgent
+    getEnvs()
+    agent = HumanAgent(num_agents=1, MEMORY_LEN=1)
+    player = VectorPlayer(agent, "./training_games/", verbose=False, num_agents=1,
+                 rank=0, world_size=1)  # Each game will be seen 5 times.
+    player.runGame(None, steps=100)
