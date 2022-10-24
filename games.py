@@ -26,6 +26,54 @@ def getEnvs(download=True):
             "tw-make tw-simple --rewards sparse   --goal brief    --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalBrief.z8")
         os.system(
             "tw-make tw-simple --rewards sparse   --goal none     --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalNone.z8")
+    
+class GameReward():
+    def __init__(self, value, num_agents=1):
+        self.value=value
+        self.num_agents=num_agents
+        
+    def reward(self, orig, actionList, infos):
+        return orig
+
+# negatively rewards invalid actions
+class InvalidReward():
+    def __init__(self, value, parentReward=None, num_agents=1):
+        self.value = value
+        self.parentReward = parentReward
+        self.lastActionInfos = None
+        self.num_agents=num_agents
+        
+    def reward(self, orig, actionList, infos):
+        score = [0 for i in range(self.num_agents)]
+                 
+        if self.parentReward is not None:
+            score = self.parentReward.reward(orig, actionList, infos)
+                 
+        if self.lastActionInfos is not None:
+            for i in range(len(infos["last_action"])
+                # test for invalid action by either a none or an unchanged action
+                if(infos["last_action"][i] is None or infos["last_action"][i] == self.lastActionInfos[i]):
+                    score[i] -= self.value
+        self.lastActionInfos = infos["last_action"]
+        return score
+                           
+class LetterReward():
+    def __init__(self, value, parentReward=None, num_agents=1, letters=('e', 'E')):
+        self.value = value
+        self.parentReward = parentReward
+        self.num_agents=num_agents
+        self.letters = letters
+        
+    def reward(self, orig, actionList, infos):
+        score = [0 for i in range(self.num_agents)]
+        if self.parentReward is not None:
+            score = self.parentReward.reward(orig, actionList, infos)
+        
+        for i in range(self.num_agents):
+            count = 0
+            for letter in self.letters:
+                count += actionList[i].count(letter)
+        
 
 class VectorPlayer:
     def __init__(self, agent, path, max_step=100, verbose=True, num_agents=1, rank=0, world_size=1, **kwargs):

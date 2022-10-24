@@ -2,7 +2,7 @@ import numpy as np
 from pathlib import Path
 from typing import List, Mapping, Any, Optional
 from collections import defaultdict
-from datastructures import RollingBuffer
+from collections import deque
 
 import textworld
 import textworld.gym
@@ -61,13 +61,23 @@ class HumanAgent(textworld.gym.Agent):
 
         self.MEMORY_LEN = MEMORY_LEN
         self.memory = Memory(MEMORY_LEN=MEMORY_LEN, num_agents=num_agents)
+        self.lastActionInfos = [None for i in range(self.num_agents)]
 
     @property
     def infos_to_request(self) -> EnvInfos:
         return EnvInfos(description=True, inventory=True, admissible_commands=True,
                         won=True, lost=True, command_templates=True,
-                        entities=True, facts=True, fail_facts=True, feedback=True, game=True, intermediate_reward=True,
-                        last_action=True, last_command=True, location=True, moves=True, objective=True, policy_commands=True, score=True, verbs=True, win_facts=True)
+                        entities=True, feedback=True, game=True, intermediate_reward=True,
+                        last_action=True, last_command=True, location=True, moves=True, objective=True, policy_commands=True, score=True, verbs=True)
+    
+    def reportScore(self, score, done, infos, **kwargs):
+        print("report --------------------------------------------------------------\n\n\n")
+        print(score)
+        for i in range(self.num_agents):
+            print("invalid ", i, " ", infos["last_action"][i] is None or infos["last_action"][i] == self.lastActionInfos[i])
+            if done[i]:
+                self.memory.clear(i)
+        self.lastActionInfos = infos["last_action"]
 
     def act(self, observation, score, done, infos, lightmodel=None, **kwargs):
         promptList = []
@@ -87,9 +97,10 @@ class HumanAgent(textworld.gym.Agent):
             # Build agent's observation: feedback + look + inventory.
             prompt, input_ = self.memory.getFormattedPrompt(i, obs, infos)
 
-            print("--------------------------------------------------------------\n\n\n")
-            print(infos)
-            print("--------------------------------------------------------------\n\n\n")
+            print("info --------------------------------------------------------------\n\n\n")
+            for k,v in infos.items():
+                print(k, v)
+            print("prompt --------------------------------------------------------------\n\n\n")
             print(prompt)
 
             promptList.append(prompt)
@@ -97,6 +108,7 @@ class HumanAgent(textworld.gym.Agent):
 
             action = input()
             actionList.append(action)
+            self.memory.append(i, input_, action)
         return actionList
 
 
@@ -105,7 +117,7 @@ class Memory:
         self.MEMORY_LEN = MEMORY_LEN
         self.num_agents = num_agents
 
-        self.memory = [RollingBuffer(self.MEMORY_LEN) for i in range(self.num_agents)]
+        self.memory = [deque(maxlen=self.MEMORY_LEN) for i in range(self.num_agents)]
 
     def clear(self, i):
         self.memory[i].clear()
@@ -301,7 +313,7 @@ class VectorNLPAgent:
                 for i in range(self.num_agents):
                     commands = infos["admissible_commands"][i]
                     idx = np.random.choice(len(commands))
-                    action = commands[idx]
+                    action = commands[idx] + "."
                     input_ = inputList[i]
 
                     self.memory.append(i, input_, action)
@@ -316,7 +328,7 @@ class VectorNLPAgent:
                 for i in range(self.num_agents):
                     commands = infos["admissible_commands"][i]
                     idx = np.random.choice(len(commands))
-                    action = commands[idx]
+                    action = commands[idx] + "."
                     input_ = inputList[i]
 
                     self.memory.append(i, input_, action)
