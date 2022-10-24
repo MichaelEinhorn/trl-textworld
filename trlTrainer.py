@@ -32,9 +32,9 @@ from agents import NLPAgent, VectorNLPAgent
 from transformers import DataCollatorForLanguageModeling
 from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
 from transformers.deepspeed import HfDeepSpeedConfig
-from lightning_transformers.utilities.deepspeed import enable_transformers_pretrained_deepspeed_sharding
+# from lightning_transformers.utilities.deepspeed import enable_transformers_pretrained_deepspeed_sharding
 
-from lightning_transformers.task.nlp.language_modeling import LanguageModelingTransformer
+# from lightning_transformers.task.nlp.language_modeling import LanguageModelingTransformer
 
 from core import (logprobs_from_logits,
                   whiten,
@@ -121,9 +121,6 @@ class TRLTrainer(pl.LightningModule):
 
     def getDevice(self):
         return self.device
-    
-    def test_step(self, batch, nb_batch):
-        pass
 
     @property
     def deepspeed_offload(self) -> bool:
@@ -133,17 +130,17 @@ class TRLTrainer(pl.LightningModule):
             return config.get('offload_optimizer') or config.get('offload_param')
         return False
 
-    # def on_save_checkpoint(self, checkpoint):
-    #     keyList = list(checkpoint['state_dict'].keys())
-    #     for k in keyList:
-    #         if "ref_model" in k:
-    #             del checkpoint['state_dict'][k]
-    #     # print(checkpoint.keys())
-    #     # print(checkpoint['state_dict'].keys())
+    def on_save_checkpoint(self, checkpoint):
+        keyList = list(checkpoint['state_dict'].keys())
+        for k in keyList:
+            if "ref_model" in k:
+                del checkpoint['state_dict'][k]
+        # print(checkpoint.keys())
+        # print(checkpoint['state_dict'].keys())
 
     def setup(self, stage=None):
-        # self.dschf = HfDeepSpeedConfig(self.trainer.strategy.config)
-        enable_transformers_pretrained_deepspeed_sharding(self)
+        self.dschf = HfDeepSpeedConfig(self.trainer.strategy.config)
+        # enable_transformers_pretrained_deepspeed_sharding(self)
         from transformers import AutoModelForCausalLM, AutoTokenizer
         model_name = self.model_name
         if not hasattr(self, "model"):
@@ -273,13 +270,13 @@ def getTrainer(**kwargs):
     trainer = pl.Trainer(
         enable_checkpointing=True,
         logger=False,
-        accelerator='gpu', devices=2,
+        accelerator='gpu', devices=1,
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(
             stage=3,
-            offload_optimizer=False,
-            offload_parameters=False 
+            offload_optimizer=True,
+            offload_parameters=True
         ),
         callbacks=[checkpoint_callback]
     )

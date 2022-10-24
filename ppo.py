@@ -98,6 +98,9 @@ class PPOTrainer(TRLTrainer):
     def configure_sharded_model(self):
         if not hasattr(self, "valueHead"):
             self.valueHead = ValueHead(self.model_name)
+            
+    def on_test_epoch_end(self):
+        self.saveStats(filename="stats/test.pt")
 
     def on_train_epoch_end(self):
         for ctl in [self.kl_ctl, self.kl_ctl_rew]:
@@ -111,61 +114,61 @@ class PPOTrainer(TRLTrainer):
                 for kl in gathered_kl:
                     ctl.kl_list.extend(kl)
 
-        if self.trainer.is_global_zero:
-            # if self.current_epoch % self.params['save_freq'] == 0:
-            #     t = time.time()
-            #     self.model.save_pretrained(f"checkpoints/{self.alg_name}_model_epoch_{self.current_epoch}")
-            #     torch.save(self.valueHead.state_dict(),
-            #                f"checkpoints/{self.alg_name}_valueHead_epoch_{self.current_epoch}.pt")
-            #     self.saveModelTime = time.time() - t
-
-            if self.current_epoch % self.params['log_freq'] == 0:
-                data = self.trainer_buffer.sample(self.params['batch_size'])
-                scores, _, _, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(
+        
+        if self.current_epoch % self.params['log_freq'] == 0:
+            if self.trainer.is_global_zero:
+                self.saveStats()
+        
+            # stats are computed on process 1, update kl ctls on all processes
+            kl_values = [self.kl_ctl.value, self.kl_ctl_rew.value]
+            torch.distributed.broadcast_object_list(kl_values, src=0)
+            if not self.trainer.is_global_zero:
+                self.kl_ctl.updateValue(kl_values[0])
+                self.kl_ctl_rew.updateValue(kl_values[1])
+                
+    def saveStats(self, filename=None):
+        if filename is None:
+            filename=f"stats/{self.alg_name}_epoch_{self.current_epoch}-step_{self.global_step}.pt"
+            
+        data = self.trainer_buffer.sample(self.params['batch_size'])
+        scores, _, _, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(
                     *data)
 
-                timing = dict()
-                timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
-                timing[f'time/{self.alg_name}/game_time'] = self.game_time
+        timing = dict()
+        timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
+        timing[f'time/{self.alg_name}/game_time'] = self.game_time
 
-                timing['time/filesystem/save_model'] = self.saveModelTime
-                timing['time/filesystem/save_stats'] = self.saveStatTime
+        timing['time/filesystem/save_model'] = self.saveModelTime
+        timing['time/filesystem/save_stats'] = self.saveStatTime
 
-                t = time.time()
-                train_stats = stack_dicts(self.all_stats)
-                self.all_stats = []
+        t = time.time()
+        train_stats = stack_dicts(self.all_stats)
+        self.all_stats = []
 
-                # reshape advantages/ratios such that they are not averaged.
-                train_stats['policy/advantages'] = torch.flatten(train_stats['policy/advantages']).unsqueeze(0)
-                train_stats['policy/advantages'] = torch.nan_to_num(train_stats['policy/advantages'], WANDB_PADDING)
-                train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
+        # reshape advantages/ratios such that they are not averaged.
+        train_stats['policy/advantages'] = torch.flatten(train_stats['policy/advantages']).unsqueeze(0)
+        train_stats['policy/advantages'] = torch.nan_to_num(train_stats['policy/advantages'], WANDB_PADDING)
+        train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
 
-                # print("kl list ", len(self.kl_ctl_rew.kl_list))
-                stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
+        # print("kl list ", len(self.kl_ctl_rew.kl_list))
+        stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
                                                non_score_reward=non_score_reward, train_stats=train_stats)
-                stats[f'{self.alg_name}/val/var_explained'] = 1 - stats[f'{self.alg_name}/val/error'] / stats[f'{self.alg_name}/returns/var']
+        stats[f'{self.alg_name}/val/var_explained'] = 1 - stats[f'{self.alg_name}/val/error'] / stats[f'{self.alg_name}/returns/var']
 
-                stats = stats_to_np(stats)
-                timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
+        stats = stats_to_np(stats)
+        timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
 
-                self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
-                self.kl_ctl_rew.update(stats['objective/kl_rew'],
+        self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
+        self.kl_ctl_rew.update(stats['objective/kl_rew'],
                                        self.params['log_freq'] * self.params['batch_size'] // self.params[
                                            f'epochs_per_game'])
 
-                # timing[f'time/{self.alg_name}/total'] = time.time() - t0
-                stats.update(timing)
-                # print(stats)
-                t = time.time()
-                torch.save(stats, f"stats/{self.alg_name}_epoch_{self.current_epoch}-step_{self.global_step}.pt")
-                self.saveStatTime = time.time() - t
-
-        # stats are computed on process 1, update kl ctls on all processes
-        kl_values = [self.kl_ctl.value, self.kl_ctl_rew.value]
-        torch.distributed.broadcast_object_list(kl_values, src=0)
-        if not self.trainer.is_global_zero:
-            self.kl_ctl.updateValue(kl_values[0])
-            self.kl_ctl_rew.updateValue(kl_values[1])
+        # timing[f'time/{self.alg_name}/total'] = time.time() - t0
+        stats.update(timing)
+        # print(stats)
+        t = time.time()
+        torch.save(stats, filename)
+        self.saveStatTime = time.time() - t
 
     def runGame(self):
         self.trainer_buffer.clear()
@@ -371,6 +374,31 @@ class PPOTrainer(TRLTrainer):
         output["values"] = all_values
         output["ref_logprobs"] = all_ref_logprobs
         return output
+    
+    def test_step(self, batch, nb_batch):
+        with torch.no_grad():
+            scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
+            fbs = scores.shape[0]
+
+            # reccomended by torch when zero3 config
+            torch.cuda.empty_cache()
+            t = time.time()
+            timing = dict()
+
+            train_stats, loss = self.train_minibatch(logprobs, values,
+                                                     rewards, queries,
+                                                     responses,
+                                                     model_input, lengths,
+                                                     values_next=values_next, ref_logprobs=ref_logprobs)
+
+            if self.trainer.is_global_zero:
+                gathered_stats = [None for i in range(self.trainer.world_size)]
+            else:
+                gathered_stats = None
+            torch.distributed.gather_object(train_stats, object_gather_list=gathered_stats, dst=0)
+            if self.trainer.is_global_zero:
+                for stats in gathered_stats:
+                    self.all_stats.extend(stats)
 
     def training_step(self, batch, nb_batch):
         scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
@@ -546,9 +574,9 @@ if __name__ == "__main__":
     
     seed_everything(42)
 
-    # model_name = 'gpt2'
+    model_name = 'gpt2'
     # model_name = 'EleutherAI/gpt-j-6B'
-    model_name = 'EleutherAI/gpt-neo-1.3B'
+    # model_name = 'EleutherAI/gpt-neo-1.3B'
     # model_name = "EleutherAI/gpt-neox-20b"
     single_game = False
     

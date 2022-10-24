@@ -41,7 +41,7 @@ if __name__ == "__main__":
         convert_zero_checkpoint_to_fp32_state_dict
     )
     # Lightning deepspeed has saved a directory instead of a file
-    save_path = "checkpoints/ppo-epoch=03.ckpt" 
+    save_path = "checkpoints/ppo-epoch=02.ckpt" 
     # output_path = "checkpoints/ppo.pt" 
     # convert_zero_checkpoint_to_fp32_state_dict(save_path, output_path)
     UPDATE_FREQUENCY = 64
