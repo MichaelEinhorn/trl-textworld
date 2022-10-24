@@ -176,7 +176,6 @@ class VectorNLPAgent:
         self.stats = {"max": defaultdict(list), "mean": defaultdict(list)}
         self.transitions = [[] for i in range(self.num_agents)]
         # self.model.reset_hidden(1)
-        self.last_score = [0 for i in range(self.num_agents)]
         self.no_train_step = [0 for i in range(self.num_agents)]
         # self.clearTextWorldArt = [True for i in range(self.num_agents)]
 
