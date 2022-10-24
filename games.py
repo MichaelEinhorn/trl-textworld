@@ -39,6 +39,7 @@ class GameReward:
         rew = [0 for i in range(self.num_agents)]
         for i in range(self.num_agents):
             rew[i] = self.value * (score[i] - self.last_score[i])
+            self.last_score[i] = score[i]
             # Will be starting a new episode. Reset the last score.
             if done[i]:
                 self.last_score[i] = 0
@@ -94,7 +95,7 @@ class InvalidReward:
     def __init__(self, value=-1, parentReward=None, num_agents=1):
         self.value = value
         self.parentReward = parentReward
-        self.lastActionInfos = None
+        self.lastActionInfos = [None for i in range(num_agents)]
         self.num_agents=num_agents
         
     def reward(self, score, actionList, done, infos):
@@ -102,16 +103,20 @@ class InvalidReward:
         if self.parentReward is not None:
             rew = self.parentReward.reward(score, actionList, done, infos)
                  
-        if self.lastActionInfos is not None:
-            for i in range(self.num_agents):
-                # test for invalid action by either a none or an unchanged action
-                if infos["last_action"][i] is None or infos["last_action"][i] == self.lastActionInfos[i]:
-                    rew[i] += self.value
+        for i in range(self.num_agents):
+            # test for invalid action by either a none or an unchanged action
+            # print(infos["last_action"][i])
+            # print(self.lastActionInfos[i])
+            # print(infos["last_action"][i] == self.lastActionInfos[i])
+            # print(infos["last_action"][i] is None or infos["last_action"][i] == self.lastActionInfos[i])
+            if infos["last_action"][i] is None or infos["last_action"][i] == self.lastActionInfos[i]:
+                rew[i] += self.value
+            # print(rew[i])
         self.lastActionInfos = infos["last_action"]
         return rew
 
     def reset(self):
-        self.lastActionInfos = None
+        self.lastActionInfos = [None for i in range(self.num_agents)]
         if self.parentReward is not None:
             self.parentReward.reset()
 

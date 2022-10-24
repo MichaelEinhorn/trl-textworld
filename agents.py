@@ -189,7 +189,7 @@ class VectorNLPAgent:
     @property
     def infos_to_request(self) -> EnvInfos:
         return EnvInfos(description=True, inventory=True, admissible_commands=True,
-                        won=True, lost=True)
+                        won=True, lost=True, last_action=True)
 
     def _discount_rewards(self):
         returnsList, advantagesList, finishedList = [], [], []
