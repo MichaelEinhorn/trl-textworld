@@ -26,58 +26,126 @@ def getEnvs(download=True):
             "tw-make tw-simple --rewards sparse   --goal brief    --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalBrief.z8")
         os.system(
             "tw-make tw-simple --rewards sparse   --goal none     --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalNone.z8")
-    
-class GameReward():
-    def __init__(self, value, num_agents=1):
+
+
+# Reward is the gain/loss in score.
+class GameReward:
+    def __init__(self, value=1, num_agents=1):
         self.value=value
         self.num_agents=num_agents
+        self.last_score = [0 for i in range(self.num_agents)]
         
-    def reward(self, orig, actionList, infos):
-        return orig
+    def reward(self, score, actionList, done, infos):
+        rew = [0 for i in range(self.num_agents)]
+        for i in range(self.num_agents):
+            rew[i] = self.value * (score[i] - self.last_score[i])
+            # Will be starting a new episode. Reset the last score.
+            if done[i]:
+                self.last_score[i] = 0
+        return rew
+
+    def reset(self):
+        self.last_score = [0 for i in range(self.num_agents)]
+
+# adds value on win, subtracts on lose
+class WinReward:
+    def __init__(self, value=100, parentReward=None, num_agents=1):
+        self.value = value
+        self.parentReward = parentReward
+        self.num_agents=num_agents
+
+    def reward(self, score, actionList, done, infos):
+        rew = [0 for i in range(self.num_agents)]
+        if self.parentReward is not None:
+            rew = self.parentReward.reward(score, actionList, done, infos)
+
+        for i in range(self.num_agents):
+            if infos["won"][i]:
+                rew += self.value
+            if infos["lost"][i]:
+                rew -= self.value
+        return rew
+
+    def reset(self):
+        if self.parentReward is not None:
+            self.parentReward.reset()
+
+class LivingReward:
+    def __init__(self, value=-0.1, parentReward=None, num_agents=1):
+        self.value = value
+        self.parentReward = parentReward
+        self.num_agents=num_agents
+
+    def reward(self, score, actionList, done, infos):
+        rew = [0 for i in range(self.num_agents)]
+        if self.parentReward is not None:
+            rew = self.parentReward.reward(score, actionList, done, infos)
+
+        for i in range(self.num_agents):
+            rew += self.value
+        return rew
+
+    def reset(self):
+        if self.parentReward is not None:
+            self.parentReward.reset()
 
 # negatively rewards invalid actions
-class InvalidReward():
-    def __init__(self, value, parentReward=None, num_agents=1):
+class InvalidReward:
+    def __init__(self, value=-1, parentReward=None, num_agents=1):
         self.value = value
         self.parentReward = parentReward
         self.lastActionInfos = None
         self.num_agents=num_agents
         
-    def reward(self, orig, actionList, infos):
-        score = [0 for i in range(self.num_agents)]
-                 
+    def reward(self, score, actionList, done, infos):
+        rew = [0 for i in range(self.num_agents)]
         if self.parentReward is not None:
-            score = self.parentReward.reward(orig, actionList, infos)
+            rew = self.parentReward.reward(score, actionList, done, infos)
                  
         if self.lastActionInfos is not None:
-            for i in range(len(infos["last_action"])
+            for i in range(self.num_agents):
                 # test for invalid action by either a none or an unchanged action
-                if(infos["last_action"][i] is None or infos["last_action"][i] == self.lastActionInfos[i]):
-                    score[i] -= self.value
+                if infos["last_action"][i] is None or infos["last_action"][i] == self.lastActionInfos[i]:
+                    rew[i] += self.value
         self.lastActionInfos = infos["last_action"]
-        return score
-                           
-class LetterReward():
-    def __init__(self, value, parentReward=None, num_agents=1, letters=('e', 'E')):
+        return rew
+
+    def reset(self):
+        self.lastActionInfos = None
+        if self.parentReward is not None:
+            self.parentReward.reset()
+
+# number of a set of letters within the action
+class LetterReward:
+    def __init__(self, value=1, parentReward=None, num_agents=1, letters=('e', 'E')):
         self.value = value
         self.parentReward = parentReward
         self.num_agents=num_agents
         self.letters = letters
         
-    def reward(self, orig, actionList, infos):
-        score = [0 for i in range(self.num_agents)]
+    def reward(self, score, actionList, done, infos):
+        rew = [0 for i in range(self.num_agents)]
         if self.parentReward is not None:
-            score = self.parentReward.reward(orig, actionList, infos)
+            rew = self.parentReward.reward(score, actionList, done, infos)
         
         for i in range(self.num_agents):
             count = 0
             for letter in self.letters:
                 count += actionList[i].count(letter)
+            rew[i] += self.value * count
+        return rew
+
+    def reset(self):
+        if self.parentReward is not None:
+            self.parentReward.reset()
         
 
 class VectorPlayer:
-    def __init__(self, agent, path, max_step=100, verbose=True, num_agents=1, rank=0, world_size=1, **kwargs):
+    def __init__(self, agent, path, rewardFunc=None, max_step=100, verbose=True, num_agents=1, rank=0, world_size=1, **kwargs):
         # torch.manual_seed(20211021 + rank)  # For reproducibility when using action sampling.
+        self.rewardFunc = rewardFunc
+        if self.rewardFunc is None:
+            self.rewardFunc = GameReward(num_agents=num_agents)
 
         self.exTurns = None
         if "exTurns" in kwargs:
@@ -133,6 +201,7 @@ class VectorPlayer:
         self.score = [0 for i in range(self.num_agents)]
         self.done = [False for i in range(self.num_agents)]
         self.nb_moves = 0
+        self.rewardFunc.reset()
 
     def runGame(self, lightmodel, steps=10):
         if self.rank == 0:
@@ -171,16 +240,16 @@ class VectorPlayer:
             steps -= stepsCompleted
             
             # if steps <= 0:
-                
-            if hasattr(self.agent, 'reportScore'):
-                self.agent.reportScore(self.score, self.done, self.infos)
+            if hasattr(self.agent, 'report'):
+                rew = self.rewardFunc.reward(self.score, command, self.done, self.infos)
+                self.agent.report(rew, self.score, self.done, self.infos)
+
             self.nb_moves += 1
         if self.rank == 0:
             print("\r", total_steps - steps, "/", total_steps, sep="", flush=True)
         # print(total_steps - steps, "/", total_steps, " on rank ", self.rank, sep="", flush=True)
         torch.distributed.barrier()
 
-            
     def close(self):
         self.env.close()
         if self.verbose:
@@ -191,11 +260,19 @@ class VectorPlayer:
                 msg = "  \tavg. steps: {:5.1f}; avg. score: {:4.1f} / {}."
                 print(msg.format(self.nb_moves/self.no_episode, np.mean(self.avg_scores), self.infos["max_score"]))
 
+
 # human player
 if __name__ == "__main__":
     from agents import HumanAgent
     getEnvs()
-    agent = HumanAgent(num_agents=1, MEMORY_LEN=1)
-    player = VectorPlayer(agent, "./training_games/", verbose=False, num_agents=1,
-                 rank=0, world_size=1)  # Each game will be seen 5 times.
-    player.runGame(None, steps=100)
+
+    gameRew = GameReward(value=1, num_agents=1)
+    gameRew = WinReward(value=100, num_agents=1, parentReward=gameRew)
+    gameRew = InvalidReward(value=-1, num_agents=1, parentReward=gameRew)
+
+    letterRew = LetterReward(value=1, num_agents=1, letters=('e', 'E'))
+
+    agent_ = HumanAgent(num_agents=1, MEMORY_LEN=1)
+    player_ = VectorPlayer(agent_, "./training_games/", verbose=False, num_agents=1,
+                 rank=0, world_size=1, rewardFunc=gameRew)  # Each game will be seen 5 times.
+    player_.runGame(None, steps=100)

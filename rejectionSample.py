@@ -31,6 +31,7 @@ from trlTrainer import TRLTrainer
 from games import VectorPlayer, getEnvs, Player
 
 from transformers import DataCollatorForLanguageModeling
+from games import GameReward, WinReward, LivingReward, InvalidReward, LetterReward
 
 from core import (logprobs_from_logits,
                   whiten,
@@ -81,8 +82,7 @@ class RejectionTuner(TRLTrainer):
         self.agent_buffer = ReplayBuffer(self.params["game_batch_size"])
 
         self.playerKWArgs = getKW(exTurns=0.25)
-        self.agentKWArgs = getKW(useUnfinished=True, GAMMA=self.params["game_gamma"], MEMORY_LEN=self.params["few_shot"],
-                                 testCountLetters=('e', 'E'))
+        self.agentKWArgs = getKW(useUnfinished=True, GAMMA=self.params["game_gamma"], MEMORY_LEN=self.params["few_shot"])
 
     def getDevice(self):
         return self.device

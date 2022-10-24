@@ -23,8 +23,8 @@ import re
 
 
 def clean_str(s):
-    allowed_chars = " " + string.ascii_letters + string.digits
-    s = re.sub(f'[^{allowed_chars}]', '', s)
+    allowed_chars = " " + string.ascii_letters + string.digits + ".,?'"
+    s = re.sub(f"[^{allowed_chars}]", "", s)
     return s
 
 
@@ -44,7 +44,7 @@ class RandomAgent(textworld.gym.Agent):
     def infos_to_request(self) -> textworld.EnvInfos:
         return textworld.EnvInfos(admissible_commands=True)
 
-    def act(self, obs: str, score: int, done: bool, infos: Mapping[str, Any]) -> str:
+    def act(self, obs: str, score: int, done: bool, infos: Mapping[str, Any]):
         actionList = []
         for i in range(self.num_agents):
             actionList.append(self.rng.choice(infos["admissible_commands"][i]))
@@ -70,9 +70,9 @@ class HumanAgent(textworld.gym.Agent):
                         entities=True, feedback=True, game=True, intermediate_reward=True,
                         last_action=True, last_command=True, location=True, moves=True, objective=True, policy_commands=True, score=True, verbs=True)
     
-    def reportScore(self, score, done, infos, **kwargs):
+    def report(self, rewards, score, done, infos, **kwargs):
         print("report --------------------------------------------------------------\n\n\n")
-        print(score)
+        print(rewards)
         for i in range(self.num_agents):
             print("invalid ", i, " ", infos["last_action"][i] is None or infos["last_action"][i] == self.lastActionInfos[i])
             if done[i]:
@@ -147,8 +147,7 @@ class Memory:
 class VectorNLPAgent:
     """ Hugging Face Transformer Agent """
 
-    def __init__(self, buffer, num_agents=1, rank=0, world_size=1, useUnfinished=True, GAMMA=0.8, MEMORY_LEN=1,
-                 testCountLetters=None, **kwargs) -> None:
+    def __init__(self, buffer, num_agents=1, rank=0, world_size=1, useUnfinished=True, GAMMA=0.8, MEMORY_LEN=1, **kwargs) -> None:
         self._initialized = False
         self._epsiode_has_started = False
         self.num_agents = num_agents
@@ -163,11 +162,7 @@ class VectorNLPAgent:
         self.transitions = [[] for i in range(self.num_agents)]
         # self.clearTextWorldArt = [True for i in range(self.num_agents)]
 
-        # PPO trainer uses next values to get a value across transitions
-        self.returnNextValues = True
         self.useUnfinished = useUnfinished
-
-        self.testCountLetters = testCountLetters  # None
 
         self.rewValStat = []
 
@@ -221,7 +216,6 @@ class VectorNLPAgent:
         return returnsList, advantagesList, finishedList
 
     def fillBuffer(self, **kwargs):
-        np.savetxt("rewVals.csv", self.rewValStat, delimiter=',')
         # get discounted returns and advantages across multiple actions. Currently not used
         returnsList, advantagesList, finishedList = self._discount_rewards()
         unfinCount = [0 for i in range(self.num_agents)]
@@ -249,7 +243,7 @@ class VectorNLPAgent:
             self.transitions = [self.transitions[i][-unfinCount[i]:] for i in range(self.num_agents)]
 
     # fill in results from action and train if time
-    def reportScore(self, score, done, infos, **kwargs):
+    def report(self, rewards, score, done, infos, **kwargs):
         exTurn = False
         if "exTurn" in kwargs:
             if kwargs["exTurn"] == 1:
@@ -257,15 +251,9 @@ class VectorNLPAgent:
 
         for i in range(self.num_agents):
             if self.mode == "train":
-                reward = score[i] - self.last_score[i]  # Reward is the gain/loss in score.
-                self.last_score[i] = score[i]
-                if infos["won"][i]:
-                    reward += 100
-                if infos["lost"][i]:
-                    reward -= 100
 
-                if self.testCountLetters is None and not exTurn:
-                    self.transitions[i][-1][0] = reward  # Update reward information. Was initialized as none
+                if not exTurn:
+                    self.transitions[i][-1][0] = rewards[i]  # Update reward information. Was initialized as none
 
                 if not exTurn:
                     self.no_train_step[i] += 1
@@ -274,7 +262,6 @@ class VectorNLPAgent:
 
                 # notification of done does not have a new state
                 if done[i]:
-                    self.last_score[i] = 0  # Will be starting a new episode. Reset the last score.
                     self.memory.clear(i)
                     # self.clearTextWorldArt[i] = True
                     # mark last transition of episode
@@ -341,17 +328,6 @@ class VectorNLPAgent:
                         action = actionList[i]
                         prompt = promptList[i]
                         reward = None  # Reward will be set on the next call
-
-                        if self.testCountLetters is not None:
-                            count = 0
-                            for letter in self.testCountLetters:
-                                count += action.count(letter)
-                            # count /= len(action)
-                            reward = torch.tensor(count, dtype=torch.float16)
-                            # if i == 0:
-                            #     print("reward", reward)
-                            printFile("reward " + str(reward), i, epoch, self.rank, self.num_agents)
-                            self.rewValStat.append([lightmodel.current_epoch, reward, 0])
 
                         self.transitions[i].append(
                             [reward, prompt, action, 0, False, [0], [0]])
@@ -478,29 +454,11 @@ class VectorNLPAgent:
             if self.mode == "train":
                 reward = None  # Reward will be set on the next call
 
-                if self.testCountLetters is not None:
-                    count = 0
-                    for letter in self.testCountLetters:
-                        count += action.count(letter)
-                    # count /= len(action)
-                    reward = torch.tensor(count, dtype=first_value.dtype)
-                    # if i == 0:
-                    #     print("reward", reward)
-                    printFile("reward " + str(reward), i, epoch, self.rank, self.num_agents)
-                    self.rewValStat.append([lightmodel.current_epoch, reward, first_value.detach().cpu().numpy()])
-
-                if not self.returnNextValues:
-                    self.transitions[i].append(
-                        [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
-                         first_value.to(torch.device("cpu")), False, self.GAMMA * val.to("cpu"), logp.to("cpu")])
-                    # additional discount for cross experience values
-                else:
-                    #                                       # not done on last step
-                    if len(self.transitions[i]) != 0 and not self.transitions[i][-1][4]:
-                        self.transitions[i][-1][3] = first_value.to(torch.device("cpu"))
-                    self.transitions[i].append(
-                        [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
-                         torch.tensor(0, dtype=val.dtype), False, val.to("cpu"), logp.to("cpu")])
+                if len(self.transitions[i]) != 0 and not self.transitions[i][-1][4]:
+                    self.transitions[i][-1][3] = first_value.to(torch.device("cpu"))
+                self.transitions[i].append(
+                    [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
+                    torch.tensor(0, dtype=val.dtype), False, val.to("cpu"), logp.to("cpu")])
 
             # removes non ascii chars and \
             action = clean_str(action)
