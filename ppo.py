@@ -28,8 +28,8 @@ from torch.utils.data import DataLoader
 from torchinfo import summary
 
 from valueHead import ValueHead
-from games import VectorPlayer, getEnvs, Player
-from agents import NLPAgent, VectorNLPAgent
+from games import VectorPlayer, getEnvs
+from agents import VectorNLPAgent
 
 from transformers import DataCollatorForLanguageModeling
 
@@ -222,10 +222,16 @@ class PPOTrainer(TRLTrainer):
         """ Initialize Adam optimizer"""
         # self.optimizer = Adam(model.parameters(), lr=self.params['lr'])
         # optimizer = Adam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
-        if self.deepspeed_offload:
-            optimizer = DeepSpeedCPUAdam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
+        paramList = list(self.model.parameters()) + list(self.valueHead.parameters())
+        if True: # use normal deepspeed opt
+            if self.deepspeed_offload:
+                optimizer = DeepSpeedCPUAdam(paramList, lr=self.params['lr'])
+            else:
+                optimizer = FusedAdam(paramList, lr=self.params['lr'])
         else:
-            optimizer = FusedAdam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
+            from nero import Nero
+            optimizer = Nero(paramList, lr=self.params['lr'])
+            
         return [optimizer]
 
     def __dataloader(self) -> DataLoader:
@@ -581,6 +587,7 @@ if __name__ == "__main__":
     seed_everything(42)
 
     model_name = 'gpt2'
+    # model_name = 'gpt2-medium'
     # model_name = 'EleutherAI/gpt-j-6B'
     # model_name = 'EleutherAI/gpt-neo-1.3B'
     # model_name = "EleutherAI/gpt-neox-20b"

@@ -27,7 +27,7 @@ from torchinfo import summary
 
 from valueHead import ValueHead
 from games import VectorPlayer, getEnvs
-from agents import NLPAgent, VectorNLPAgent
+from agents import VectorNLPAgent
 
 from transformers import DataCollatorForLanguageModeling
 from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
@@ -127,7 +127,7 @@ class TRLTrainer(pl.LightningModule):
         strategy = self.trainer.strategy
         if isinstance(strategy, DeepSpeedStrategy):
             config = strategy.config['zero_optimization']
-            return config.get('offload_optimizer') or config.get('offload_param')
+            return config.get('offload_optimizer') # or config.get('offload_param')
         return False
 
     def on_save_checkpoint(self, checkpoint):
@@ -275,7 +275,7 @@ def getTrainer(**kwargs):
         precision=16,
         strategy=DeepSpeedStrategy(
             stage=3,
-            offload_optimizer=True,
+            offload_optimizer=False,
             offload_parameters=True
         ),
         callbacks=[checkpoint_callback]

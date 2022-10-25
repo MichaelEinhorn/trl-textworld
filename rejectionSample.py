@@ -9,7 +9,7 @@ import time
 import random
 from argparse import Namespace
 
-from agents import VectorNLPAgent, NLPAgent
+from agents import VectorNLPAgent
 from datastructures import RejectDataset
 from datastructures import RejectionBuffer
 from datastructures import ReplayBuffer
@@ -28,7 +28,7 @@ from torch.utils.data import DataLoader
 from torchinfo import summary
 
 from trlTrainer import TRLTrainer
-from games import VectorPlayer, getEnvs, Player
+from games import VectorPlayer, getEnvs
 
 from transformers import DataCollatorForLanguageModeling
 from games import GameReward, WinReward, LivingReward, InvalidReward, LetterReward
