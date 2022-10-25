@@ -62,9 +62,9 @@ class WinReward:
 
         for i in range(self.num_agents):
             if infos["won"][i]:
-                rew += self.value
+                rew[i] += self.value
             if infos["lost"][i]:
-                rew -= self.value
+                rew[i] -= self.value
         return rew
 
     def reset(self):
@@ -83,7 +83,7 @@ class LivingReward:
             rew = self.parentReward.reward(score, actionList, done, infos)
 
         for i in range(self.num_agents):
-            rew += self.value
+            rew[i] += self.value
         return rew
 
     def reset(self):
