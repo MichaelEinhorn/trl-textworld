@@ -223,7 +223,7 @@ class PPOTrainer(TRLTrainer):
         # self.optimizer = Adam(model.parameters(), lr=self.params['lr'])
         # optimizer = Adam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
         paramList = list(self.model.parameters()) + list(self.valueHead.parameters())
-        if True: # use normal deepspeed opt
+        if True:  # use normal deepspeed opt
             if self.deepspeed_offload:
                 optimizer = DeepSpeedCPUAdam(paramList, lr=self.params['lr'])
             else:
