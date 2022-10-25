@@ -130,11 +130,12 @@ class TRLTrainer(pl.LightningModule):
             return config.get('offload_optimizer') # or config.get('offload_param')
         return False
 
-    def on_save_checkpoint(self, checkpoint):
-        keyList = list(checkpoint['state_dict'].keys())
-        for k in keyList:
-            if "ref_model" in k:
-                del checkpoint['state_dict'][k]
+    # appears to have no effect on deepspeed checkpoint size
+    # def on_save_checkpoint(self, checkpoint):
+    #     keyList = list(checkpoint['state_dict'].keys())
+    #     for k in keyList:
+    #         if "ref_model" in k:
+    #             del checkpoint['state_dict'][k]
         # print(checkpoint.keys())
         # print(checkpoint['state_dict'].keys())
 
@@ -270,7 +271,7 @@ def getTrainer(**kwargs):
     trainer = pl.Trainer(
         enable_checkpointing=True,
         logger=False,
-        accelerator='gpu', devices=1,
+        accelerator='gpu', devices=2,
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(

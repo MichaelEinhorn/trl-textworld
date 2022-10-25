@@ -68,6 +68,10 @@ class Nero(Optimizer):
                 
                 # State initialization similar to how deepspeed does
                 if len(state) == 0:
+                    # if self.constraints and p.dim() > 1:
+                    #     p.data -= neuron_mean(p)
+                    #     p.data /= neuron_norm(p)
+                    # state = self.state[p]
                     state['step'] = 0
                     state['exp_avg_sq'] = torch.zeros_like(neuron_norm(p))
                     state['scale'] = neuron_norm(p).mean()

@@ -229,6 +229,7 @@ class PPOTrainer(TRLTrainer):
             else:
                 optimizer = FusedAdam(paramList, lr=self.params['lr'])
         else:
+            # doesn't appear to work with deepspeed distributed
             from nero import Nero
             optimizer = Nero(paramList, lr=self.params['lr'])
             
