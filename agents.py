@@ -28,6 +28,12 @@ def clean_str(s):
     return s
 
 
+# does not match escape chars like \n
+def hasLettersOrNum(s):
+    allowed_chars = string.ascii_letters + string.digits
+    return bool(re.search(f'[{allowed_chars}]', s))
+
+
 def printFile(s, i, epoch, rank, num_agents):
     with open(f"trajectories/epoch_{epoch}_agent_{i + rank * num_agents}.txt", "a") as myfile:
         myfile.write(s + "\n")
@@ -345,6 +351,9 @@ class VectorNLPAgent:
         cache = None
         # 0 is done, 1 is continuing
         finished = torch.ones((self.num_agents,), device=lightmodel.getDevice())
+        # if the model has outputted a letter or number
+        # will not stop until after this has been flipped
+        startedLetter = torch.zeros((self.num_agents,), device=lightmodel.getDevice())
         maxLen = 20
         genLengths = [maxLen for i in range(self.num_agents)]
 
@@ -352,7 +361,7 @@ class VectorNLPAgent:
         valuesList = []
         # printFile("start generation loop", 0, epoch, self.rank, self.num_agents)
         # while new_tokens == 0 or (new_tokens < maxLen and torch.sum(finished) > 0):
-        # apparently pytorch lightning or deepspeed doesn't like when 1 gpu is doing a forward when the other is not
+        # generate all 20 tokens, because gpus need to call forward pass in sync for deepspeed
         while new_tokens == 0 or (new_tokens < maxLen):
             # run model
             with torch.no_grad():
@@ -383,10 +392,20 @@ class VectorNLPAgent:
 
                 for i in range(self.num_agents):
                     # only if not finished
-                    if finished[i] == 1 and ("\n" in lightmodel.tokenizer.decode(next_token[i]) or next_token[
-                        i] == lightmodel.tokenizer.eos_token):
-                        finished[i] = 0
-                        genLengths[i] = new_tokens + 1
+                    if finished[i] == 1:
+                        decodedToken = lightmodel.tokenizer.decode(next_token[i])
+                        if startedLetter[i] == 0 and hasLettersOrNum(decodedToken):
+                            startedLetter[i] = 1
+
+                        stopCond = False
+                        stopCond = stopCond or "\n" in decodedToken
+                        stopCond = stopCond or next_token[i] == lightmodel.tokenizer.eos_token
+
+                        stopCond = stopCond and startedLetter[i] == 1
+
+                        if stopCond:
+                            finished[i] = 0
+                            genLengths[i] = new_tokens + 1
 
                 logprob = logprobs_from_logits(logits[:, -1:, :], next_token.unsqueeze(-1))
                 logprobList.append(logprob)
