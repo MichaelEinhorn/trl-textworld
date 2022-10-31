@@ -145,7 +145,7 @@ class Memory:
 
         # clear newlines and spaces at the top
         if obs.startswith("\n") or obs.startswith(" "):
-            idx = re.search("[^\n ]")
+            idx = re.search("[^\n ]", obs)
             obs = obs[idx:]
 
         pastStates = ""
