@@ -465,7 +465,7 @@ class VectorNLPAgent:
             #     print("first value in action", first_value)
             #     # print(value)
             printFile("first value in action " + str(first_value.item()), i, epoch, self.rank, self.num_agents)
-            printFile("action probability " + str(torch.exp(torch.sum(logp)).item()))
+            printFile("action probability " + str(torch.exp(torch.sum(logp)).item()), i, epoch, self.rank, self.num_agents)
             # only grab last token
             # value = values[i, genLengths[i] - 1, 0]
 
