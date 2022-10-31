@@ -95,9 +95,14 @@ class PPOTrainer(TRLTrainer):
         gameRew = InvalidReward(value=-1, num_agents=self.params["num_agents"], parentReward=gameRew)
 
         letterRew = LetterReward(value=1, num_agents=self.params["num_agents"], letters=('e', 'E'))
+        
+        invalidRew = InvalidReward(value=-1, num_agents=self.params["num_agents"], parentReward=None)
 
-        self.playerKWArgs = getKW(exTurns=0.25, rewardFunc=letterRew)
+        self.playerKWArgs = getKW(exTurns=0.33, rewardFunc=invalidRew)
         self.agentKWArgs = getKW(useUnfinished=True, GAMMA=self.params["game_gamma"], MEMORY_LEN=self.params["few_shot"])
+        
+        # print(self.playerKWArgs)
+        # print(self.agentKWArgs)
         
     # def setup(self, stage=None):
     #     super().setup(stage=stage)
@@ -587,10 +592,10 @@ if __name__ == "__main__":
     
     seed_everything(42)
 
-    model_name = 'gpt2'
+    # model_name = 'gpt2'
     # model_name = 'gpt2-medium'
     # model_name = 'EleutherAI/gpt-j-6B'
-    # model_name = 'EleutherAI/gpt-neo-1.3B'
+    model_name = 'EleutherAI/gpt-neo-1.3B'
     # model_name = "EleutherAI/gpt-neox-20b"
     single_game = False
     

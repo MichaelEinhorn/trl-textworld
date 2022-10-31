@@ -295,6 +295,7 @@ class VectorNLPAgent:
         # does a random admissable action and adds to memory. Does not create a transition in experience buffer
         actionList = []
         if "exTurn" in kwargs:
+            # print(kwargs["exTurn"])
             if kwargs["exTurn"] == 1:
                 for i in range(self.num_agents):
                     commands = infos["admissible_commands"][i]

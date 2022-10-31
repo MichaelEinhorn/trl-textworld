@@ -271,12 +271,12 @@ def getTrainer(**kwargs):
     trainer = pl.Trainer(
         enable_checkpointing=True,
         logger=False,
-        accelerator='gpu', devices=2,
+        accelerator='gpu', devices=1,
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(
             stage=3,
-            offload_optimizer=False,
+            offload_optimizer=True,
             offload_parameters=True
         ),
         callbacks=[checkpoint_callback]

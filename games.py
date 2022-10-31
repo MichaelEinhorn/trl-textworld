@@ -155,6 +155,7 @@ class VectorPlayer:
         self.exTurns = None
         if "exTurns" in kwargs:
             self.exTurns = kwargs["exTurns"]
+            print("example turn rate ", self.exTurns)
         self.decisionTrans = False
         if "decisionTrans" in kwargs:
             self.decisionTrans = kwargs["decisionTrans"]
@@ -213,7 +214,8 @@ class VectorPlayer:
             print("\n" + "running game for " + str(steps) + " steps on rank " + str(self.rank))
         exTurnSampler = None
         if self.exTurns is not None:
-            exTurnSampler = torch.distributions.bernoulli.Bernoulli(probs=self.exTurns)
+            exTurnSampler = torch.distributions.bernoulli.Bernoulli(probs=torch.tensor([self.exTurns]))
+            # print(exTurnSampler.probs)
         total_steps = steps
         while steps > 0:
             if self.rank == 0:
