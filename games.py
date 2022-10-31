@@ -223,7 +223,7 @@ class VectorPlayer:
             # print(total_steps - steps, "/", total_steps, " on rank ", self.rank, sep="", flush=True)
             # torch.distributed.barrier()
             stepsCompleted = self.num_agents
-
+            ex = 0
             if self.exTurns is not None:
                 ex = exTurnSampler.sample()
                 if ex == 1:
@@ -249,7 +249,7 @@ class VectorPlayer:
             # if steps <= 0:
             if hasattr(self.agent, 'report'):
                 rew = self.rewardFunc.reward(self.score, command, self.done, self.infos)
-                self.agent.report(rew, self.score, self.done, self.infos)
+                self.agent.report(rew, self.score, self.done, self.infos, exTurn=ex)
 
             self.nb_moves += 1
         if self.rank == 0:

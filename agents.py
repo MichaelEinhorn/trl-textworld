@@ -473,7 +473,7 @@ class VectorNLPAgent:
 
             if self.mode == "train":
                 reward = None  # Reward will be set on the next call
-
+                # fill next value spot in transitions
                 if len(self.transitions[i]) != 0 and not self.transitions[i][-1][4]:
                     self.transitions[i][-1][3] = first_value.to(torch.device("cpu"))
                 self.transitions[i].append(
