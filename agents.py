@@ -270,9 +270,9 @@ class VectorNLPAgent:
                     self.memory.clear(i)
                     # self.clearTextWorldArt[i] = True
                     # mark last transition of episode
-                    if not exTurn:
-                        if len(self.transitions[i]) != 0:
-                            self.transitions[i][-1][4] = True
+                    # if not exTurn:
+                    if len(self.transitions[i]) != 0:
+                        self.transitions[i][-1][4] = True
 
     def act(self, observation, score, done, infos, lightmodel, **kwargs):
         promptList = []
