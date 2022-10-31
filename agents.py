@@ -131,6 +131,23 @@ class Memory:
     # obs is just the observation for the current index
     # infos is a dict with every index
     def getFormattedPrompt(self, i, obs, infos):
+        # clear textworld opening art
+        seq = "Welcome to TextWorld!"
+        if seq in obs:
+            obs = obs[obs.rindex(seq) + len(seq):]
+        seq = "$$$$$$$"
+        if seq in obs:
+            obs = obs[obs.rindex(seq) + len(seq):]
+
+        # clear double new lines
+        while "\n\n" in obs:
+            obs = obs.replace("\n\n", "\n")
+
+        # clear newlines and spaces at the top
+        if obs.startswith("\n") or obs.startswith(" "):
+            idx = re.search("[^\n ]")
+            obs = obs[idx:]
+
         pastStates = ""
         for mem in self.memory[i]:
             pastStates = pastStates + mem + "\n"
@@ -176,6 +193,7 @@ class VectorNLPAgent:
 
         self.rank = rank
         self.world_size = world_size
+        self.epoch = 0
 
     def train(self):
         self.mode = "train"
@@ -257,6 +275,8 @@ class VectorNLPAgent:
         for i in range(self.num_agents):
             if self.mode == "train":
 
+                printFile("reward: " + rewards[i], i, self.epoch, self.rank, self.num_agents)
+
                 if not exTurn:
                     self.transitions[i][-1][0] = rewards[i]  # Update reward information. Was initialized as none
 
@@ -278,17 +298,11 @@ class VectorNLPAgent:
         promptList = []
         inputList = []
         epoch = lightmodel.current_epoch
+        self.epoch = epoch
 
         # infos is dict of lists
         for i in range(self.num_agents):
             obs = observation[i]
-            # if self.clearTextWorldArt[i]:
-            if True:
-                # self.clearTextWorldArt[i] = False
-                if "Welcome to TextWorld!" in obs:
-                    obs = obs[obs.index("Welcome to TextWorld!"):]
-                elif "$$$$$$$" in obs:
-                    obs = obs[obs.rindex("$$$$$$$"):]
 
             # Build agent's observation: feedback + look + inventory.
             prompt, input_ = self.memory.getFormattedPrompt(i, obs, infos)
