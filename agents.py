@@ -92,21 +92,13 @@ class HumanAgent(textworld.gym.Agent):
         # infos is dict of lists
         for i in range(self.num_agents):
             obs = observation[i]
-            # if self.clearTextWorldArt[i]:
-            if True:
-                # self.clearTextWorldArt[i] = False
-                if "Welcome to TextWorld!" in obs:
-                    obs = obs[obs.index("Welcome to TextWorld!"):]
-                elif "$$$$$$$" in obs:
-                    obs = obs[obs.rindex("$$$$$$$"):]
-
             # Build agent's observation: feedback + look + inventory.
             prompt, input_ = self.memory.getFormattedPrompt(i, obs, infos)
 
-            print("info --------------------------------------------------------------\n\n\n")
+            print("info --------------------------------------------------------------")
             for k,v in infos.items():
                 print(k, v)
-            print("prompt --------------------------------------------------------------\n\n\n")
+            print("prompt --------------------------------------------------------------")
             print(prompt)
 
             promptList.append(prompt)
@@ -145,7 +137,7 @@ class Memory:
 
         # clear newlines and spaces at the top
         if obs.startswith("\n") or obs.startswith(" "):
-            idx = re.search("[^\n ]", obs)
+            idx = re.search("[^\n ]", obs).start()
             obs = obs[idx:]
 
         pastStates = ""
