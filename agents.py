@@ -150,7 +150,8 @@ class Memory:
             admissible_commands_str += adm_cmd + ", "
         adm_cmd = infos["admissible_commands"][i][len(infos["admissible_commands"][i]) - 1]
         admissible_commands_str += "or " + adm_cmd + "."
-        input_ = "{} {} {} {} What do you do? You ".format(obs, infos["description"][i], infos["inventory"][i],
+        # infos["description"][i]
+        input_ = "{} {} {} What do you do? You ".format(obs, infos["inventory"][i],
                                                            admissible_commands_str)
         prompt = pastStates + input_
         return prompt, input_
