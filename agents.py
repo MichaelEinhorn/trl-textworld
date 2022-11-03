@@ -141,7 +141,7 @@ class Memory:
             obs = obs[idx:]
 
         # removes headlines such as -= Bedroom =- Less weird punctuation is probably better for the model
-        obs = re.sub(r"-=.*?=-")
+        obs = re.sub(r"-=.*?=-", "",  obs)
 
         pastStates = ""
         for mem in self.memory[i]:
