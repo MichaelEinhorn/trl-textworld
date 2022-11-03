@@ -140,6 +140,9 @@ class Memory:
             idx = re.search("[^\n ]", obs).start()
             obs = obs[idx:]
 
+        # removes headlines such as -= Bedroom =- Less weird punctuation is probably better for the model
+        obs = re.sub(r"-=.*?=-")
+
         pastStates = ""
         for mem in self.memory[i]:
             pastStates = pastStates + mem + "\n"
