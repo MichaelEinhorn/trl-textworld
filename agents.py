@@ -131,6 +131,9 @@ class Memory:
         if seq in obs:
             obs = obs[obs.rindex(seq) + len(seq):]
 
+        # removes headlines such as -= Bedroom =- Less weird punctuation is probably better for the model
+        obs = re.sub(r"-=.*?=-", "", obs)
+
         # clear double new lines
         while "\n\n" in obs:
             obs = obs.replace("\n\n", "\n")
@@ -139,9 +142,6 @@ class Memory:
         if obs.startswith("\n") or obs.startswith(" "):
             idx = re.search("[^\n ]", obs).start()
             obs = obs[idx:]
-
-        # removes headlines such as -= Bedroom =- Less weird punctuation is probably better for the model
-        obs = re.sub(r"-=.*?=-", "",  obs)
 
         pastStates = ""
         for mem in self.memory[i]:
