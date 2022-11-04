@@ -68,7 +68,7 @@ class PPOTrainer(TRLTrainer):
         "horizon": 10000,
         # KL added to rewards at start of PPO Epochs
         "adap_kl_ctrl_rew": False,
-        "init_kl_coef_rew": 0.0,
+        "init_kl_coef_rew": 0.1,
         "target_rew": 6,
         "horizon_rew": 10000,
         # end KL
@@ -99,12 +99,12 @@ class PPOTrainer(TRLTrainer):
 
         invalidRew = InvalidReward(value=-1, num_agents=self.params["num_agents"], parentReward=None)
 
-        self.playerKWArgs = getKW(exTurns=0.33, rewardFunc=gameRew)
+        self.playerKWArgs = getKW(exTurns=0.25, rewardFunc=gameRew)
         self.agentKWArgs = getKW(useUnfinished=True, GAMMA=self.params["game_gamma"],
                                  MEMORY_LEN=self.params["few_shot"])
 
-        print("kl value ", self.kl_ctl.value)
-        print("kl rew value ", self.kl_ctl_rew.value)
+        # print("kl value ", self.kl_ctl.value)
+        # print("kl rew value ", self.kl_ctl_rew.value)
 
         # print(self.playerKWArgs)
         # print(self.agentKWArgs)

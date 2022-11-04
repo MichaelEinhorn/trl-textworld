@@ -23,7 +23,7 @@ import re
 
 
 def clean_str(s):
-    allowed_chars = " " + string.ascii_letters + string.digits + ".,?'"
+    allowed_chars = " " + string.ascii_letters + string.digits + ".?'"
     s = re.sub(f"[^{allowed_chars}]", "", s)
     return s
 
@@ -146,7 +146,7 @@ class Memory:
         pastStates = ""
         for mem in self.memory[i]:
             pastStates = pastStates + mem + "\n"
-        admissible_commands_str = "You can "
+        admissible_commands_str = "Your possible actions are "
         for cmd_idx in range(len(infos["admissible_commands"][i]) - 1):
             adm_cmd = infos["admissible_commands"][i][cmd_idx]
             # for adm_cmd in infos["admissible_commands"][i]:
@@ -154,7 +154,10 @@ class Memory:
         adm_cmd = infos["admissible_commands"][i][len(infos["admissible_commands"][i]) - 1]
         admissible_commands_str += "or " + adm_cmd + "."
         # infos["description"][i]
-        input_ = "{}{} {} You take the action to ".format(obs, infos["inventory"][i],
+        inventoryStr = infos["inventory"][i]
+        if "nothing" in inventoryStr:
+            inventoryStr = ""
+        input_ = "{}{} {} You can only choose a single action. You take the action to ".format(obs, inventoryStr,
                                                            admissible_commands_str)
         prompt = pastStates + input_
         return prompt, input_
@@ -408,14 +411,18 @@ class VectorNLPAgent:
                             startedLetter[i] = 1
 
                         stopCond = False
-                        stopCond = stopCond or "\n" in decodedToken
+                        stopCond = stopCond or decodedToken in "\n.,?!:;"
                         stopCond = stopCond or next_token[i] == lightmodel.tokenizer.eos_token
 
                         stopCond = stopCond and startedLetter[i] == 1
 
                         if stopCond:
                             finished[i] = 0
-                            genLengths[i] = new_tokens + 1
+                            if next_token[i] == lightmodel.tokenizer.eos_token or "\n" in decodedToken:
+                                genLengths[i] = new_tokens
+                            else:
+                                genLengths[i] = new_tokens + 1
+                            
 
                 logprob = logprobs_from_logits(logits[:, -1:, :], next_token.unsqueeze(-1))
                 logprobList.append(logprob)

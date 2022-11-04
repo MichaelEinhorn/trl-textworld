@@ -89,9 +89,9 @@ def whitenBatch(valuesList, rank=0, world_size=1, shift_mean=True):
     flatList = torch.cat(flatList)
     gatherList = None
     if rank == 0:
-        gatherList = []
+        gatherList = [None for i in range(world_size)]
         
-    torch.distributed.gather_object(flatList, gather_list=gatherList, dst=0)
+    torch.distributed.gather_object(flatList, object_gather_list=gatherList, dst=0)
     flatList = None
     mean, var = None, None
     if rank == 0:
@@ -105,7 +105,7 @@ def whitenBatch(valuesList, rank=0, world_size=1, shift_mean=True):
     
     # 1e-8 is too small for fp16
     for i in range(len(valuesList)):
-        whitened = (values - mean) * torch.rsqrt(var + 1e-6)
+        whitened = (valuesList[i] - mean) * torch.rsqrt(var + 1e-6)
         if not shift_mean:
             whitened += mean
         whitenedList.append(whitened)
