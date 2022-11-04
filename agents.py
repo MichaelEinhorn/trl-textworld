@@ -271,7 +271,7 @@ class VectorNLPAgent:
         for i in range(self.num_agents):
             if self.mode == "train":
 
-                printFile("reward: " + rewards[i], i, self.epoch, self.rank, self.num_agents)
+                printFile(f"reward: {rewards[i]}", i, self.epoch, self.rank, self.num_agents)
 
                 if not exTurn:
                     self.transitions[i][-1][0] = rewards[i]  # Update reward information. Was initialized as none

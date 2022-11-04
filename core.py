@@ -65,6 +65,8 @@ def whiten(values, shift_mean=True):
     """Whiten values."""
     # single element is equal to mean
     if values.shape[1] == 1:
+        if not shift_mean:
+            return values
         return torch.tensor(0, dtype=values.dtype)
     mean, var = torch.mean(values), torch.var(values)
     # 1e-8 is too small for fp16
@@ -72,6 +74,42 @@ def whiten(values, shift_mean=True):
     if not shift_mean:
         whitened += mean
     return whitened
+
+def whitenBatch(valuesList, rank=0, world_size=1, shift_mean=True):
+    """Whiten values."""
+    # single element is equal to mean
+    if len(valuesList) == 1 and valuesList[0].shape[1] == 1 and world_size == 1:
+        if not shift_mean:
+            return valuesList
+        return [torch.tensor(0, dtype=values.dtype)]
+    
+    flatList = []
+    for i in range(len(valuesList)):
+        flatList.append(valuesList[i].flatten())
+    flatList = torch.cat(flatList)
+    gatherList = None
+    if rank == 0:
+        gatherList = []
+        
+    torch.distributed.gather_object(flatList, gather_list=gatherList, dst=0)
+    flatList = None
+    mean, var = None, None
+    if rank == 0:
+        flatList = torch.cat(gatherList)
+        mean, var = torch.mean(flatList), torch.var(flatList)
+    object_list = [mean, var]
+    torch.distributed.broadcast_object_list(object_list, src=0)
+    mean, var = object_list
+    
+    whitenedList = []
+    
+    # 1e-8 is too small for fp16
+    for i in range(len(valuesList)):
+        whitened = (values - mean) * torch.rsqrt(var + 1e-6)
+        if not shift_mean:
+            whitened += mean
+        whitenedList.append(whitened)
+    return whitenedList
 
 
 def clip_by_value(x, tensor_min, tensor_max):

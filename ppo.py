@@ -92,13 +92,13 @@ class PPOTrainer(TRLTrainer):
 
         gameRew = GameReward(value=1, num_agents=self.params["num_agents"])
         gameRew = WinReward(value=100, num_agents=self.params["num_agents"], parentReward=gameRew)
-        gameRew = InvalidReward(value=-1, num_agents=self.params["num_agents"], parentReward=gameRew)
+        gameRew = InvalidReward(value=-.5, num_agents=self.params["num_agents"], parentReward=gameRew)
 
         letterRew = LetterReward(value=1, num_agents=self.params["num_agents"], letters=('e', 'E'))
         
         invalidRew = InvalidReward(value=-1, num_agents=self.params["num_agents"], parentReward=None)
 
-        self.playerKWArgs = getKW(exTurns=0.33, rewardFunc=invalidRew)
+        self.playerKWArgs = getKW(exTurns=0.33, rewardFunc=gameRew)
         self.agentKWArgs = getKW(useUnfinished=True, GAMMA=self.params["game_gamma"], MEMORY_LEN=self.params["few_shot"])
         
         # print(self.playerKWArgs)
