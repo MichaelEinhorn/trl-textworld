@@ -38,7 +38,7 @@ from trlTrainer import TRLTrainer
 from games import GameReward, WinReward, LivingReward, InvalidReward, LetterReward
 
 from core import (logprobs_from_logits,
-                  whiten,
+                  whiten, whitenBatch,
                   clip_by_value,
                   entropy_from_logits,
                   flatten_dict,
@@ -51,6 +51,7 @@ from core import (logprobs_from_logits,
                   pad_mask,
                   getKW)
 
+
 class PPOTrainer(TRLTrainer):
     """
     The PPO_trainer uses Proximal Policy Optimization to optimise language models.
@@ -62,7 +63,7 @@ class PPOTrainer(TRLTrainer):
         "reference": True,
         # KL Calcuated per forward batch importance corrected exact gradients
         "adap_kl_ctrl": False,
-        "init_kl_coef": 0.1,
+        "init_kl_coef": 0.0,
         "target": 6,
         "horizon": 10000,
         # KL added to rewards at start of PPO Epochs
@@ -87,7 +88,7 @@ class PPOTrainer(TRLTrainer):
         super().__init__(model_name=model_name, **params)
 
         self.trainer_buffer = None
-        
+
         self.agent_buffer = ReplayBuffer(self.params["batch_size"])
 
         gameRew = GameReward(value=1, num_agents=self.params["num_agents"])
@@ -95,21 +96,25 @@ class PPOTrainer(TRLTrainer):
         gameRew = InvalidReward(value=-.5, num_agents=self.params["num_agents"], parentReward=gameRew)
 
         letterRew = LetterReward(value=1, num_agents=self.params["num_agents"], letters=('e', 'E'))
-        
+
         invalidRew = InvalidReward(value=-1, num_agents=self.params["num_agents"], parentReward=None)
 
         self.playerKWArgs = getKW(exTurns=0.33, rewardFunc=gameRew)
-        self.agentKWArgs = getKW(useUnfinished=True, GAMMA=self.params["game_gamma"], MEMORY_LEN=self.params["few_shot"])
-        
+        self.agentKWArgs = getKW(useUnfinished=True, GAMMA=self.params["game_gamma"],
+                                 MEMORY_LEN=self.params["few_shot"])
+
+        print("kl value ", self.kl_ctl.value)
+        print("kl rew value ", self.kl_ctl_rew.value)
+
         # print(self.playerKWArgs)
         # print(self.agentKWArgs)
-        
+
     # def setup(self, stage=None):
     #     super().setup(stage=stage)
     def configure_sharded_model(self):
         if not hasattr(self, "valueHead"):
             self.valueHead = ValueHead(self.model_name)
-            
+
     def on_test_epoch_end(self):
         self.saveStats(filename="stats/test.pt")
 
@@ -125,25 +130,24 @@ class PPOTrainer(TRLTrainer):
                 for kl in gathered_kl:
                     ctl.kl_list.extend(kl)
 
-        
         if self.current_epoch % self.params['log_freq'] == 0:
             if self.trainer.is_global_zero:
                 self.saveStats()
-        
+
             # stats are computed on process 1, update kl ctls on all processes
             kl_values = [self.kl_ctl.value, self.kl_ctl_rew.value]
             torch.distributed.broadcast_object_list(kl_values, src=0)
             if not self.trainer.is_global_zero:
                 self.kl_ctl.updateValue(kl_values[0])
                 self.kl_ctl_rew.updateValue(kl_values[1])
-                
+
     def saveStats(self, filename=None):
         if filename is None:
-            filename=f"stats/{self.alg_name}_epoch_{self.current_epoch}-step_{self.global_step}.pt"
-            
+            filename = f"stats/{self.alg_name}_epoch_{self.current_epoch}-step_{self.global_step}.pt"
+
         data = self.trainer_buffer.sample(self.params['batch_size'])
         scores, _, _, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(
-                    *data)
+            *data)
 
         timing = dict()
         timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
@@ -163,16 +167,17 @@ class PPOTrainer(TRLTrainer):
 
         # print("kl list ", len(self.kl_ctl_rew.kl_list))
         stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
-                                               non_score_reward=non_score_reward, train_stats=train_stats)
-        stats[f'{self.alg_name}/val/var_explained'] = 1 - stats[f'{self.alg_name}/val/error'] / stats[f'{self.alg_name}/returns/var']
+                                       non_score_reward=non_score_reward, train_stats=train_stats)
+        stats[f'{self.alg_name}/val/var_explained'] = 1 - stats[f'{self.alg_name}/val/error'] / stats[
+            f'{self.alg_name}/returns/var']
 
         stats = stats_to_np(stats)
         timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
 
         self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
         self.kl_ctl_rew.update(stats['objective/kl_rew'],
-                                       self.params['log_freq'] * self.params['batch_size'] // self.params[
-                                           f'epochs_per_game'])
+                               self.params['log_freq'] * self.params['batch_size'] // self.params[
+                                   f'epochs_per_game'])
 
         # timing[f'time/{self.alg_name}/total'] = time.time() - t0
         stats.update(timing)
@@ -187,10 +192,10 @@ class PPOTrainer(TRLTrainer):
         # self is passing the model to do forward passes with
         self.player.runGame(self, self.params['batch_size'])
         self.agent.fillBuffer()
-        
+
         # print("rank ", self.trainer.global_rank, " arrived at rungame barrier")
         torch.distributed.barrier()
-        
+
         self.kl_ctl_rew.kl_list = []
         scores, queries, responses, values_next, ret_cross, adv_cross, values, logprobs = self.agent_buffer.sample(
             self.params['batch_size'])
@@ -206,8 +211,8 @@ class PPOTrainer(TRLTrainer):
         t = time.time()
         # logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
         ref_logprobs = \
-        self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True)[
-            "ref_logprobs"]
+            self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True)[
+                "ref_logprobs"]
         # print("rank ", self.trainer.global_rank, " finished ref logprobs")
 
         timing[f'time/{self.alg_name}/forward_pass'] = time.time() - t
@@ -237,7 +242,7 @@ class PPOTrainer(TRLTrainer):
             # doesn't appear to work with deepspeed distributed
             from nero import Nero
             optimizer = Nero(paramList, lr=self.params['lr'])
-            
+
         return [optimizer]
 
     def __dataloader(self) -> DataLoader:
@@ -254,16 +259,18 @@ class PPOTrainer(TRLTrainer):
     def train_dataloader(self) -> DataLoader:
         """Get train loader"""
         return self.__dataloader()
-    
+
     def test_dataloader(self) -> DataLoader:
         return self.__dataloader()
 
-    def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False, attention_mask=None, outputLogits=True):
-        # print(f"forward on rank {self.trainer.global_rank} with cache {use_cache} with past key {past_key_values is not None}  vals {outputVals} reference {outputRef} mask {attention_mask is not None}  logit {outputLogits}") 
+    def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False,
+                attention_mask=None, outputLogits=True):
+        # print(f"forward on rank {self.trainer.global_rank} with cache {use_cache} with past key {past_key_values is not None}  vals {outputVals} reference {outputRef} mask {attention_mask is not None}  logit {outputLogits}")
         output = {}
         if outputLogits or outputVals:
             if past_key_values is None:
-                lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache, attention_mask=attention_mask)
+                lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache,
+                                   attention_mask=attention_mask)
             else:
                 lmOut = self.model(input_ids, output_hidden_states=outputVals, use_cache=use_cache,
                                    past_key_values=past_key_values, attention_mask=attention_mask)
@@ -286,7 +293,7 @@ class PPOTrainer(TRLTrainer):
             with torch.no_grad():
                 ref_logits = self.ref_model(input_ids).logits
                 output["ref_logits"] = ref_logits
-        
+
         # print(f"forward on rank {self.trainer.global_rank} finished all")
         return output
 
@@ -318,7 +325,8 @@ class PPOTrainer(TRLTrainer):
                 # # ref_logits, _, _ = self.ref_model(input_ids)
                 # ref_logits = self.ref_model(input_ids).logits
                 input_ids = input_ids.to(self.device)
-                lmout = self.forward(input_ids, outputVals=outputVals, outputRef=outputRef, outputLogits=outputLogits, attention_mask=attention_mask)
+                lmout = self.forward(input_ids, outputVals=outputVals, outputRef=outputRef, outputLogits=outputLogits,
+                                     attention_mask=attention_mask)
 
                 if outputLogits:
                     logits = lmout["logits"]
@@ -340,7 +348,7 @@ class PPOTrainer(TRLTrainer):
                 # left pad
                 gen_len = len(response_batch[j])
                 if outputVals:
-                    all_values.append(v[j, -(gen_len+1):-1])
+                    all_values.append(v[j, -(gen_len + 1):-1])
                 # logits already shifted
                 if outputLogits:
                     all_logprobs.append(logprobs[j, -gen_len:])
@@ -392,7 +400,7 @@ class PPOTrainer(TRLTrainer):
         output["values"] = all_values
         output["ref_logprobs"] = all_ref_logprobs
         return output
-    
+
     def test_step(self, batch, nb_batch):
         with torch.no_grad():
             scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = batch
@@ -444,7 +452,7 @@ class PPOTrainer(TRLTrainer):
 
         return loss
 
-    def train_minibatch(self, logprobs, values, rewards, query, response, model_input, lengths, values_next=(0.0,),
+    def train_minibatch(self, old_logprobs, values, rewards, query, response, model_input, lengths, values_next=(0.0,),
                         ref_logprobs=None):
         """Train one PPO minibatch"""
         loss_total = None
@@ -458,13 +466,29 @@ class PPOTrainer(TRLTrainer):
         lmout = self.forward(input_ids, outputVals=True, outputRef=False, attention_mask=input_mask)
         logits, vpred = lmout["logits"], lmout["values"]
         train_stats = []
+        returnsList = []
+        advantagesList = []
         for i in range(logits.shape[0]):
             # keep batch dim
-            loss_p, loss_v, kl_loss, stat = self.loss(logits[i:i + 1], vpred[i:i + 1], logprobs[i:i + 1],
-                                                             values[i:i + 1], rewards[i:i + 1], query_ids[i:i + 1],
-                                                             response_ids[i:i + 1], input_ids[i:i + 1], lengths[i],
-                                                             values_next=values_next[i:i + 1],
-                                                             ref_logprobs=ref_logprobs[i:i + 1])
+            returns, advantages = self.computeAdvantage(logits[i:i + 1], vpred[i:i + 1], old_logprobs[i:i + 1],
+                                                        values[i:i + 1], rewards[i:i + 1], query_ids[i:i + 1],
+                                                        response_ids[i:i + 1], input_ids[i:i + 1], lengths[i],
+                                                        values_next=values_next[i:i + 1],
+                                                        ref_logprobs=ref_logprobs[i:i + 1])
+            returnsList.append(returns)
+            advantagesList.append(advantages)
+
+        # gets a combined mean and var of every element in batch across all ranks
+        whitenBatch(advantagesList, rank=self.trainer.global_rank, world_size=self.trainer.world_size)
+
+        for i in range(logits.shape[0]):
+            # keep batch dim
+            loss_p, loss_v, kl_loss, stat = self.loss(logits[i:i + 1], vpred[i:i + 1], old_logprobs[i:i + 1],
+                                                      values[i:i + 1], rewards[i:i + 1], query_ids[i:i + 1],
+                                                      response_ids[i:i + 1], input_ids[i:i + 1], lengths[i],
+                                                      returnsList[i], advantagesList[i],
+                                                      values_next=values_next[i:i + 1],
+                                                      ref_logprobs=ref_logprobs[i:i + 1])
             loss = loss_p + loss_v + kl_loss
             train_stats.append(stat)
 
@@ -474,9 +498,9 @@ class PPOTrainer(TRLTrainer):
                 loss_total += loss
         return train_stats, loss
 
-    def loss(self, logits, vpred, old_logprobs, values, rewards, query, response, input_ids, lengths, values_next=0.0,
-             ref_logprobs=None):
-        """Calculate policy and value losses."""
+    def computeAdvantage(self, logits, vpred, old_logprobs, values, rewards, query, response, input_ids, lengths,
+                         values_next=0.0,
+                         ref_logprobs=None):
         lastgaelam = 0
         advantages_reversed = []
         # gen_len = response.shape[1]
@@ -497,7 +521,37 @@ class PPOTrainer(TRLTrainer):
         advantages = torch.stack(advantages_reversed[::-1]).transpose(0, 1)
 
         returns = advantages + values
-        advantages = whiten(advantages)
+        # whiten as a batch instead
+        # advantages = whiten(advantages)
+        advantages = advantages.detach()
+
+        return returns, advantages
+
+    def loss(self, logits, vpred, old_logprobs, values, rewards, query, response, input_ids, lengths, returns,
+             advantages, values_next=0.0,
+             ref_logprobs=None):
+        """Calculate policy and value losses."""
+        # lastgaelam = 0
+        # advantages_reversed = []
+        # gen_len = response.shape[1]
+        querry_len = lengths[0]
+        gen_len = lengths[1]
+        total_len = lengths[2]
+
+        values = values[:, :gen_len]
+        rewards = rewards[:, :gen_len]
+        old_logprobs = old_logprobs[:, :gen_len]
+        ref_logprobs = ref_logprobs[:, :gen_len]
+
+        #         for t in reversed(range(gen_len)):
+        #             nextvalues = values[:, t + 1] if t < gen_len - 1 else self.params["game_gamma"] * values_next
+        #             delta = rewards[:, t] + self.params['gamma'] * nextvalues - values[:, t]
+        #             lastgaelam = delta + self.params['gamma'] * self.params['lam'] * lastgaelam
+        #             advantages_reversed.append(lastgaelam)
+        #         advantages = torch.stack(advantages_reversed[::-1]).transpose(0, 1)
+
+        #         returns = advantages + values
+        #         advantages = whiten(advantages)
         advantages = advantages.detach()
 
         # computed batched before this method called
@@ -513,7 +567,7 @@ class PPOTrainer(TRLTrainer):
         # logprob, vpred = logprob[:, start:end], vpred[:, start:end]
         # left pad
         # logits were already shifted
-        logprob, vpred = logprob[:, -gen_len:], vpred[:, -(gen_len+1):-1]
+        logprob, vpred = logprob[:, -gen_len:], vpred[:, -(gen_len + 1):-1]
         # logprob, vpred = logprob[:, total_len-gen_len:total_len], vpred[:, total_len-gen_len - 1:total_len-1]
 
         vpredclipped = clip_by_value(vpred,
@@ -545,7 +599,9 @@ class PPOTrainer(TRLTrainer):
         # mean across tokens
         kl_loss = torch.mean(kl)
 
-        loss = pg_loss + self.params['vf_coef'] * vf_loss + self.kl_ctl.value * kl_loss
+        loss = pg_loss + self.params['vf_coef'] * vf_loss
+        if self.kl_ctl.value != 0.0:
+            loss = loss + self.kl_ctl.value * kl_loss
 
         entropy = torch.mean(entropy_from_logits(logits))
         approxkl = .5 * torch.mean((logprob - old_logprobs) ** 2)
@@ -579,9 +635,11 @@ def train(model_name=None, single_game=True):
     NUM_AGENTS = max(NUM_AGENTS // trainer.world_size, 1)
 
     if trainer.is_global_zero:
-        print("Params per thread: update freq ", UPDATE_FREQUENCY, " forward batch ", FORWARD_BATCH, " num agents ", NUM_AGENTS)
+        print("Params per thread: update freq ", UPDATE_FREQUENCY, " forward batch ", FORWARD_BATCH, " num agents ",
+              NUM_AGENTS)
 
-    ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': FORWARD_BATCH, "log_freq": LOG_FREQUENCY, "num_agents": NUM_AGENTS, "single_game": single_game}
+    ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': FORWARD_BATCH, "log_freq": LOG_FREQUENCY,
+                  "num_agents": NUM_AGENTS, "single_game": single_game}
     ppo_trainer = PPOTrainer(model_name=model_name, **ppo_config)
 
     trainer.fit(ppo_trainer)
@@ -589,7 +647,7 @@ def train(model_name=None, single_game=True):
 
 if __name__ == "__main__":
     import argparse
-    
+
     seed_everything(42)
 
     # model_name = 'gpt2'
@@ -598,7 +656,7 @@ if __name__ == "__main__":
     model_name = 'EleutherAI/gpt-neo-1.3B'
     # model_name = "EleutherAI/gpt-neox-20b"
     single_game = False
-    
+
     Path("stats").mkdir(parents=True, exist_ok=True)
     Path("checkpoints").mkdir(parents=True, exist_ok=True)
 
