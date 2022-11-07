@@ -59,7 +59,8 @@ class PPOTrainer(TRLTrainer):
 
     default_params = {
         "alg_name": "ppo",
-        "lr": 1.41e-5,
+        # "lr": 1.41e-5,
+        "lr": 0.7e-5,
         "reference": True,
         # KL Calcuated per forward batch importance corrected exact gradients
         "adap_kl_ctrl": False,
@@ -81,7 +82,7 @@ class PPOTrainer(TRLTrainer):
         "forward_batch_size": 16,
         "epochs_per_game": 4,
         "game_gamma": 0.8,
-        "few_shot": 1
+        "few_shot": 0
     }
 
     def __init__(self, model_name=None, **params):
@@ -306,6 +307,8 @@ class PPOTrainer(TRLTrainer):
         all_values = []
 
         output = {}
+        
+        # print("\n" + "batched forward on rank " + str(self.trainer.global_rank))
 
         for i in range(int(bs / fbs)):
             # print("rank ", self.trainer.global_rank, " ref batch ", i)
@@ -315,6 +318,9 @@ class PPOTrainer(TRLTrainer):
             input_ids = model_input["input_ids"]
             attention_mask = pad_mask(input_ids, self.tokenizer.pad_token_id)
             # print("forward pass mask ", attention_mask)
+            
+            # if self.trainer.global_rank == 0:
+            #     print("\r", i, "/", int(bs / fbs), sep="", end="", flush=True)
 
             with torch.no_grad():
                 # # logits, _, v = self.model(input_ids)
@@ -357,6 +363,7 @@ class PPOTrainer(TRLTrainer):
 
         rem = bs % fbs
         if rem != 0:
+            print("remainder batch ", rem, sep="", end="", flush=True)
             # print("rank ", self.trainer.global_rank, " final ref batch ", rem)
             query_batch = queries[-rem:]
             response_batch = responses[-rem:]
@@ -478,24 +485,35 @@ class PPOTrainer(TRLTrainer):
             returnsList.append(returns)
             advantagesList.append(advantages)
 
+        # causes a deadlock at the beginning of loss() on multi gpu. Unsure how
         # gets a combined mean and var of every element in batch across all ranks
-        whitenBatch(advantagesList, rank=self.trainer.global_rank, world_size=self.trainer.world_size)
+        # print("whiten batch rank ", self.trainer.global_rank, flush=True)
+        # whitenBatch(advantagesList, rank=self.trainer.global_rank, world_size=self.trainer.world_size)
+        # print("whiten batch finished rank ", self.trainer.global_rank, flush=True)
 
         for i in range(logits.shape[0]):
             # keep batch dim
+            # print("loss i ", i, "rank ", self.trainer.global_rank, flush=True)
             loss_p, loss_v, kl_loss, stat = self.loss(logits[i:i + 1], vpred[i:i + 1], old_logprobs[i:i + 1],
                                                       values[i:i + 1], rewards[i:i + 1], query_ids[i:i + 1],
                                                       response_ids[i:i + 1], input_ids[i:i + 1], lengths[i],
                                                       returnsList[i], advantagesList[i],
                                                       values_next=values_next[i:i + 1],
                                                       ref_logprobs=ref_logprobs[i:i + 1])
+            
             loss = loss_p + loss_v + kl_loss
+            loss = loss_p + loss_v
+            if self.kl_ctl.value != 0.0:
+                loss = loss + kl_loss
+                
             train_stats.append(stat)
 
             if loss_total is None:
                 loss_total = loss
             else:
                 loss_total += loss
+        
+        # print("train step finished rank ", self.trainer.global_rank, flush=True)
         return train_stats, loss
 
     def computeAdvantage(self, logits, vpred, old_logprobs, values, rewards, query, response, input_ids, lengths,
@@ -522,7 +540,7 @@ class PPOTrainer(TRLTrainer):
 
         returns = advantages + values
         # whiten as a batch instead
-        # advantages = whiten(advantages)
+        advantages = whiten(advantages)
         advantages = advantages.detach()
 
         return returns, advantages
@@ -568,8 +586,9 @@ class PPOTrainer(TRLTrainer):
         # left pad
         # logits were already shifted
         logprob, vpred = logprob[:, -gen_len:], vpred[:, -(gen_len + 1):-1]
-        # logprob, vpred = logprob[:, total_len-gen_len:total_len], vpred[:, total_len-gen_len - 1:total_len-1]
-
+        # logprob, vpred = logprob[:, total_len-gen_len:total_len], vpred[:, total_len-gen_len - 1:total_len-1]\
+        
+        # print("vf loss rank ", self.trainer.global_rank, flush=True)
         vpredclipped = clip_by_value(vpred,
                                      values - self.params["cliprange_value"],
                                      values + self.params["cliprange_value"])
@@ -579,6 +598,7 @@ class PPOTrainer(TRLTrainer):
         vf_loss = .5 * torch.mean(torch.max(vf_losses1, vf_losses2))
         vf_clipfrac = torch.mean(torch.gt(vf_losses2, vf_losses1).double())
 
+        # print("pg loss rank ", self.trainer.global_rank, flush=True)
         ratio = torch.exp(logprob - old_logprobs)
 
         pg_losses = -advantages * ratio
@@ -588,7 +608,8 @@ class PPOTrainer(TRLTrainer):
 
         pg_loss = torch.mean(torch.max(pg_losses, pg_losses2))
         pg_clipfrac = torch.mean(torch.gt(pg_losses2, pg_losses).double())
-
+        
+        # print("kl loss rank ", self.trainer.global_rank, flush=True)
         # directly backprop through KL instead of a KL reward penalty
         kl = logprob - ref_logprobs
         # importence sampling correction KL (P || R) sampled from Q
@@ -598,11 +619,15 @@ class PPOTrainer(TRLTrainer):
         self.kl_ctl.kl_list.append(kl.detach().to("cpu"))
         # mean across tokens
         kl_loss = torch.mean(kl)
-
+        
+        
+        # print("total loss rank ", self.trainer.global_rank, flush=True)
         loss = pg_loss + self.params['vf_coef'] * vf_loss
         if self.kl_ctl.value != 0.0:
+            # print("add kl loss rank ", self.trainer.global_rank, flush=True)
             loss = loss + self.kl_ctl.value * kl_loss
 
+        # print("loss stats rank ", self.trainer.global_rank)
         entropy = torch.mean(entropy_from_logits(logits))
         approxkl = .5 * torch.mean((logprob - old_logprobs) ** 2)
         policykl = torch.mean(logprob - old_logprobs)
@@ -617,6 +642,7 @@ class PPOTrainer(TRLTrainer):
             val=dict(vpred=torch.mean(vpred), error=torch.mean((vpred - returns) ** 2),
                      clipfrac=vf_clipfrac, mean=value_mean, var=value_var),
         )
+        # print("loss return rank ", self.trainer.global_rank, flush=True)
         return pg_loss, self.params['vf_coef'] * vf_loss, self.kl_ctl.value * kl_loss, stats_to_cpu(flatten_dict(stats))
 
 
@@ -653,8 +679,8 @@ if __name__ == "__main__":
     # model_name = 'gpt2'
     # model_name = 'gpt2-medium'
     # model_name = 'EleutherAI/gpt-j-6B'
-    model_name = 'EleutherAI/gpt-neo-1.3B'
-    # model_name = "EleutherAI/gpt-neox-20b"
+    # model_name = 'EleutherAI/gpt-neo-1.3B'
+    model_name = "EleutherAI/gpt-neox-20b"
     single_game = False
 
     Path("stats").mkdir(parents=True, exist_ok=True)

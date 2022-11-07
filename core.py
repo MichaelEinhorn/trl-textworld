@@ -91,15 +91,22 @@ def whitenBatch(valuesList, rank=0, world_size=1, shift_mean=True):
     if rank == 0:
         gatherList = [None for i in range(world_size)]
         
+    device = valuesList[0].device
+        
+    print("whiten gather", rank, flush=True)
     torch.distributed.gather_object(flatList, object_gather_list=gatherList, dst=0)
+    
     flatList = None
-    mean, var = None, None
+    mean, var = 0, 0
     if rank == 0:
+        for i in range(len(gatherList)):
+            gatherList[i] = gatherList[i].to(device)
         flatList = torch.cat(gatherList)
         mean, var = torch.mean(flatList), torch.var(flatList)
-    object_list = [mean, var]
-    torch.distributed.broadcast_object_list(object_list, src=0)
-    mean, var = object_list
+    meanVar = torch.tensor([mean, var], device=device)
+    print("whiten broadcast", rank, flush=True)
+    torch.distributed.broadcast(meanVar, src=0)
+    mean, var = meanVar[0], meanVar[1]
     
     whitenedList = []
     

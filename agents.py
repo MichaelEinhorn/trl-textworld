@@ -149,15 +149,18 @@ class Memory:
         admissible_commands_str = "Your possible actions are "
         for cmd_idx in range(len(infos["admissible_commands"][i]) - 1):
             adm_cmd = infos["admissible_commands"][i][cmd_idx]
-            # for adm_cmd in infos["admissible_commands"][i]:
-            admissible_commands_str += adm_cmd + ", "
+            if not "examine" in adm_cmd:
+                # for adm_cmd in infos["admissible_commands"][i]:
+                admissible_commands_str += adm_cmd + ", "
         adm_cmd = infos["admissible_commands"][i][len(infos["admissible_commands"][i]) - 1]
         admissible_commands_str += "or " + adm_cmd + "."
         # infos["description"][i]
         inventoryStr = infos["inventory"][i]
         if "nothing" in inventoryStr:
             inventoryStr = ""
-        input_ = "{}{} {} You can only choose a single action. You take the action to ".format(obs, inventoryStr,
+        # input_ = "{}{}{} You can only choose a single action. You take the action to ".format(obs, inventoryStr,
+        #                                                    admissible_commands_str)
+        input_ = "{}{}{} You choose the action to".format(obs, inventoryStr,
                                                            admissible_commands_str)
         prompt = pastStates + input_
         return prompt, input_
@@ -193,6 +196,11 @@ class VectorNLPAgent:
         self.rank = rank
         self.world_size = world_size
         self.epoch = 0
+        
+        self.rng = None
+        # init later to get device
+        # self.rng = torch.Generator()
+        # self.rng.manual_seed(self.rng.initial_seed() + rank)
 
     def train(self):
         self.mode = "train"
@@ -298,6 +306,10 @@ class VectorNLPAgent:
         inputList = []
         epoch = lightmodel.current_epoch
         self.epoch = epoch
+        
+        if self.rng is None:
+            self.rng = torch.Generator(device=lightmodel.device)
+            self.rng.manual_seed(self.rng.initial_seed() + self.rank)
 
         # infos is dict of lists
         for i in range(self.num_agents):
@@ -396,7 +408,7 @@ class VectorNLPAgent:
                 next_token_logits = logits[:, -1, :]
                 # next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=0, top_p=1)
                 probs = F.softmax(next_token_logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
+                next_token = torch.multinomial(probs, num_samples=1, generator=self.rng).squeeze(1)
                 input_ids = torch.cat([input_ids, next_token.unsqueeze(-1)], dim=-1)
 
                 # keep last token in att
