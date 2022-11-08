@@ -238,7 +238,7 @@ class TRLTrainer(pl.LightningModule):
 
         mean_entropy = torch.mean(torch.stack([torch.sum(-log_probs) for log_probs in data['logprobs']]))
         mean_non_score_reward = torch.mean(
-            torch.stack([torch.sum(non_score_reward) for non_score_reward in data['non_score_reward']]))
+            torch.stack([torch.sum(non_score_reward).to("cpu") for non_score_reward in data['non_score_reward']]))
         stats = {
             'objective/kl': mean_kl,
             'objective/kl_dist': kl_list,

@@ -27,6 +27,7 @@ from deepspeed.ops.adam import FusedAdam
 from torch.utils.data import DataLoader
 from torchinfo import summary
 
+import trlTrainer
 from trlTrainer import TRLTrainer
 from games import VectorPlayer, getEnvs
 
@@ -55,12 +56,12 @@ class RejectionTuner(TRLTrainer):
         "reference": True,
         # KL Calcuated per forward batch importance corrected exact gradients
         "adap_kl_ctrl": False,
-        "init_kl_coef": 0.1,
+        "init_kl_coef": 0.0,
         "target": 6,
         "horizon": 10000,
         # KL added to rewards at start of Reject Epochs
         "adap_kl_ctrl_rew": False,
-        "init_kl_coef_rew": 0.0,
+        "init_kl_coef_rew": 0.1,
         "target_rew": 6,
         "horizon_rew": 10000,
         # end KL
@@ -81,8 +82,16 @@ class RejectionTuner(TRLTrainer):
         self.trainer_buffer = None
         self.rejectRatio = 0
         self.agent_buffer = ReplayBuffer(self.params["game_batch_size"])
+        
+        gameRew = GameReward(value=1, num_agents=self.params["num_agents"])
+        gameRew = WinReward(value=100, num_agents=self.params["num_agents"], parentReward=gameRew)
+        gameRew = InvalidReward(value=-.5, num_agents=self.params["num_agents"], parentReward=gameRew)
 
-        self.playerKWArgs = getKW(exTurns=0.25)
+        letterRew = LetterReward(value=1, num_agents=self.params["num_agents"], letters=('e', 'E'))
+
+        invalidRew = InvalidReward(value=-1, num_agents=self.params["num_agents"], parentReward=None)
+
+        self.playerKWArgs = getKW(exTurns=0.25, rewardFunc=gameRew)
         self.agentKWArgs = getKW(useUnfinished=True, GAMMA=self.params["game_gamma"], MEMORY_LEN=self.params["few_shot"])
 
     def getDevice(self):
@@ -260,46 +269,8 @@ class RejectionTuner(TRLTrainer):
                     ctl.kl_list.extend(kl)
 
         if self.trainer.is_global_zero:
-            if self.current_epoch % self.params['save_freq'] == 0:
-                t = time.time()
-                self.model.save_pretrained(f"checkpoints/{self.alg_name}_model_epoch_{self.current_epoch}")
-                self.saveModelTime = time.time() - t
-
             if self.current_epoch % self.params['log_freq'] == 0:
-                data, scores_kl = self.trainer_buffer.sample(self.params['batch_size'])
-                scores, _, _, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
-
-                timing = dict()
-                timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
-                timing[f'time/{self.alg_name}/game_time'] = self.game_time
-
-                timing['time/filesystem/save_model'] = self.saveModelTime
-                timing['time/filesystem/save_stats'] = self.saveStatTime
-
-                t = time.time()
-                train_stats = stack_dicts(self.all_stats)
-                self.all_stats = []
-
-                train_stats['rejectRatio'] = self.rejectRatio
-                train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
-
-                # print("kl list ", len(self.kl_ctl_rew.kl_list))
-                stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
-                                               non_score_reward=non_score_reward, train_stats=train_stats)
-                stats = stats_to_np(stats)
-                timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
-
-                self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
-                self.kl_ctl_rew.update(stats['objective/kl_rew'],
-                                       self.params['log_freq'] * self.params['batch_size'] // self.params[
-                                           f'epochs_per_game'])
-
-                # timing[f'time/{self.alg_name}/total'] = time.time() - t0
-                stats.update(timing)
-                # print(stats)
-                t = time.time()
-                torch.save(stats, f"stats/{self.alg_name}_epoch_{self.current_epoch}-step_{self.global_step}.pt")
-                self.saveStatTime = time.time() - t
+                self.saveStats()
 
         # stats are computed on process 1, update kl ctls on all processes
         kl_values = [self.kl_ctl.value, self.kl_ctl_rew.value]
@@ -307,6 +278,44 @@ class RejectionTuner(TRLTrainer):
         if not self.trainer.is_global_zero:
             self.kl_ctl.updateValue(kl_values[0])
             self.kl_ctl_rew.updateValue(kl_values[1])
+            
+    def saveStats(self, filename=None):
+        if filename is None:
+            filename = f"stats/{self.alg_name}_epoch_{self.current_epoch}-step_{self.global_step}.pt"
+        data, scores_kl = self.trainer_buffer.sample(self.params['batch_size'])
+        scores, _, _, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
+
+        timing = dict()
+        timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
+        timing[f'time/{self.alg_name}/game_time'] = self.game_time
+
+        timing['time/filesystem/save_model'] = self.saveModelTime
+        timing['time/filesystem/save_stats'] = self.saveStatTime
+
+        t = time.time()
+        train_stats = stack_dicts(self.all_stats)
+        self.all_stats = []
+
+        train_stats['rejectRatio'] = self.rejectRatio
+        train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
+
+        # print("kl list ", len(self.kl_ctl_rew.kl_list))
+        stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
+                                               non_score_reward=non_score_reward, train_stats=train_stats)
+        stats = stats_to_np(stats)
+        timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
+
+        self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
+        self.kl_ctl_rew.update(stats['objective/kl_rew'],
+                                       self.params['log_freq'] * self.params['batch_size'] // self.params[
+                                           f'epochs_per_game'])
+
+        # timing[f'time/{self.alg_name}/total'] = time.time() - t0
+        stats.update(timing)
+        # print(stats)
+        t = time.time()
+        torch.save(stats, filename)
+        self.saveStatTime = time.time() - t
 
     def runGame(self):
         if self.params["clear_buffer_each_game"]:
@@ -349,7 +358,7 @@ class RejectionTuner(TRLTrainer):
             response = responses[i]
             # use returns discounted across multiple transitions
 
-            score_kl = ret_cross[i].to(self.device)
+            score_kl = torch.tensor(ret_cross[i], device=self.device)
             kl_rew = torch.sum(non_score_reward[i]).to(self.device)
             score_kl += kl_rew
             scores_kl.append(score_kl)
@@ -360,8 +369,8 @@ class RejectionTuner(TRLTrainer):
                             values, rewards, non_score_reward), scores_kl):
             self.trainer_buffer.append(lineItem, score_kl)
 
-        start_n = len(self.trainer_buffer)
-        self.trainer_buffer.reject(self.params["batch_size"] * self.trainer.world_size, threshType="top n")
+        start_n = len(self.trainer_buffer) * self.trainer.world_size
+        self.trainer_buffer.reject(self.params["batch_size"] * self.trainer.world_size, threshType="top n", device=self.device)
         reject_n = len(self.trainer_buffer)
         if self.trainer.is_global_zero:
             print("rejection ", start_n, " ", reject_n)
@@ -470,10 +479,10 @@ class RejectionTuner(TRLTrainer):
 def train(model_name, single_game=False):
     from time import time
 
-    UPDATE_FREQUENCY = 64
-    FORWARD_BATCH = 4
+    UPDATE_FREQUENCY = 128
+    FORWARD_BATCH = 8
     LOG_FREQUENCY = 1
-    NUM_AGENTS = 4
+    NUM_AGENTS = 16
 
     trainer = trlTrainer.getTrainer()
 
@@ -485,7 +494,6 @@ def train(model_name, single_game=False):
     
     params = {'batch_size': UPDATE_FREQUENCY // 2,
               'game_batch_size': UPDATE_FREQUENCY,
-             'save_freq': SAVE_FREQUENCY,
              'log_freq': LOG_FREQUENCY,
              "forward_batch_size": FORWARD_BATCH,
               "num_agents": NUM_AGENTS,
@@ -503,8 +511,8 @@ if __name__ == "__main__":
 
     # model_name = 'gpt2'
     # model_name = 'EleutherAI/gpt-j-6B'
-    model_name = 'EleutherAI/gpt-neo-1.3B'
-    # model_name = "EleutherAI/gpt-neox-20b"
+    # model_name = 'EleutherAI/gpt-neo-1.3B'
+    model_name = "EleutherAI/gpt-neox-20b"
     single_game = False
 
     Path("stats").mkdir(parents=True, exist_ok=True)

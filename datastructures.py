@@ -26,7 +26,7 @@ class RejectionBuffer:
         self.values.append(v)
         self.text.append(t)
 
-    def reject(self, p, threshType="frac"):
+    def reject(self, p, threshType="frac", device=None):
         # gather all data to rank 0 before rejecting
         if self.rank == 0:
             gathered_values = [None for i in range(self.world_size)]
@@ -40,7 +40,11 @@ class RejectionBuffer:
         self.text = []
         if self.rank == 0:
             for val, tex in zip(gathered_values, gathered_text):
-                self.values.extend(val)
+                val_dev = []
+                for val_item in val:
+                    val_dev.append(val_item.to(device))
+                    
+                self.values.extend(val_dev)
                 self.text.extend(tex)
 
             if threshType == "frac":
@@ -49,7 +53,7 @@ class RejectionBuffer:
                     # idxs = idxs[::-1]
                     idxs = torch.flip(idxs, [0])
 
-                num = len(self.values * p)
+                num = len(self.values) * p
                 idxs = idxs[:num]
                 for i in range(num):
                     tempText.append(self.text[idxs[i]])
