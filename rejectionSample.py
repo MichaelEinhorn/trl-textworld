@@ -68,11 +68,12 @@ class RejectionTuner(TRLTrainer):
         "forward_batch_size": 16,
         "epochs_per_game": 4,
         "clear_buffer_each_game": True,
-        "train_generation": False,
+        "train_prompt": True,
         "game_gamma": 0.8,
         "few_shot": 1,
         # compat with ppo
-        'vf_coef': 0
+        'vf_coef': 0,
+        "ent_coef": 0.0,  # Entropy coefficient
     }
 
     def __init__(self, model_name, **params):
@@ -389,9 +390,10 @@ class RejectionTuner(TRLTrainer):
 
         ce_loss_batch = torch.tensor(0, device=self.device, dtype=logprob.dtype)
         kl_loss_batch = torch.tensor(0, device=self.device, dtype=logprob.dtype)
+        ent_loss_batch = torch.tensor(0, device=self.device, dtype=logprob.dtype)
         train_stats = []
 
-        if not self.params["train_generation"]:
+        if self.params["train_prompt"]:
             # print(logits_shifted.shape, targets.shape)
             # inputs batch x classes x seq dim
             # targets batch x seq dim
@@ -410,7 +412,7 @@ class RejectionTuner(TRLTrainer):
             ref_logp = ref_logprobs[i:i+1, :gen_len]
             old_logp = old_logprobs[i:i+1, :gen_len]
 
-            if self.params["train_generation"]:
+            if not self.params["train_prompt"]:
                 ce_loss = F.cross_entropy(torch.transpose(logit, 1,2), targ, ignore_index=self.tokenizer.pad_token_id)
                 ce_loss_batch += ce_loss
 
@@ -427,10 +429,17 @@ class RejectionTuner(TRLTrainer):
             approxkl = .5 * torch.mean((logp - old_logp) ** 2)
             policykl = torch.mean(logp - old_logp)
 
-            loss = ce_loss + self.kl_ctl.value * kl_loss
+            ent_loss = -torch.mean(entropy)
+            ent_loss_batch += ent_loss
+
+            loss = ce_loss
+            if self.kl_ctl.value != 0.0:
+                loss = loss + self.kl_ctl.value * kl_loss
+            if self.params["ent_coef"] != 0.0:
+                loss += self.params["ent_coef"] * ent_loss
 
             stats = dict(
-                loss=dict(policy=ce_loss, kl=kl_loss, total=loss),
+                loss=dict(policy=ce_loss, kl=kl_loss, ent=ent_loss, total=loss),
                 policy=dict(entropy=entropy, approxkl=approxkl, policykl=policykl, ratio=ratio),
             )
             train_stats.append(stats_to_cpu(flatten_dict(stats)))
@@ -445,10 +454,17 @@ class RejectionTuner(TRLTrainer):
                 self.all_stats.extend(stats)
 
         kl_loss_batch /= fbs
-        if self.params["train_generation"]:
+        ent_loss_batch /= fbs
+        if not self.params["train_prompt"]:
             ce_loss_batch /= fbs
 
-        return ce_loss_batch + self.kl_ctl.value * kl_loss_batch
+        loss_total = ce_loss_batch
+        if self.kl_ctl.value != 0.0:
+            loss_total += self.kl_ctl.value * kl_loss_batch
+        if self.params["ent_coef"] != 0.0:
+            loss_total += self.params["ent_coef"] * ent_loss_batch
+
+        return loss_total
 
 
 def train(model_name, single_game=False):

@@ -82,7 +82,8 @@ class PPOTrainer(TRLTrainer):
         "forward_batch_size": 16,
         "epochs_per_game": 4,
         "game_gamma": 0.8,
-        "few_shot": 0
+        "few_shot": 0,
+        "ent_coef" : 0.0, # Entropy coefficient
     }
 
     def __init__(self, model_name=None, **params):
@@ -494,17 +495,17 @@ class PPOTrainer(TRLTrainer):
         for i in range(logits.shape[0]):
             # keep batch dim
             # print("loss i ", i, "rank ", self.trainer.global_rank, flush=True)
-            loss_p, loss_v, kl_loss, stat = self.loss(logits[i:i + 1], vpred[i:i + 1], old_logprobs[i:i + 1],
+            loss, stat = self.loss(logits[i:i + 1], vpred[i:i + 1], old_logprobs[i:i + 1],
                                                       values[i:i + 1], rewards[i:i + 1], query_ids[i:i + 1],
                                                       response_ids[i:i + 1], input_ids[i:i + 1], lengths[i],
                                                       returnsList[i], advantagesList[i],
                                                       values_next=values_next[i:i + 1],
                                                       ref_logprobs=ref_logprobs[i:i + 1])
             
-            loss = loss_p + loss_v + kl_loss
-            loss = loss_p + loss_v
-            if self.kl_ctl.value != 0.0:
-                loss = loss + kl_loss
+            # loss = loss_p + loss_v + kl_loss
+            # loss = loss_p + loss_v
+            # if self.kl_ctl.value != 0.0:
+            #     loss = loss + kl_loss
                 
             train_stats.append(stat)
 
@@ -634,8 +635,12 @@ class PPOTrainer(TRLTrainer):
         return_mean, return_var = torch.mean(returns), torch.var(returns)
         value_mean, value_var = torch.mean(values), torch.var(values)
 
+        ent_loss = -torch.mean(entropy)
+        if self.params["ent_coef"] != 0.0:
+            loss += self.params["ent_coef"] * ent_loss
+
         stats = dict(
-            loss=dict(policy=pg_loss, value=vf_loss, kl=kl_loss, total=loss),
+            loss=dict(policy=pg_loss, value=vf_loss, kl=kl_loss, ent=ent_loss, total=loss),
             policy=dict(entropy=entropy, approxkl=approxkl, policykl=policykl, clipfrac=pg_clipfrac,
                         advantages=advantages, advantages_mean=torch.mean(advantages), ratio=ratio),
             returns=dict(mean=return_mean, var=return_var),
@@ -643,7 +648,7 @@ class PPOTrainer(TRLTrainer):
                      clipfrac=vf_clipfrac, mean=value_mean, var=value_var),
         )
         # print("loss return rank ", self.trainer.global_rank, flush=True)
-        return pg_loss, self.params['vf_coef'] * vf_loss, self.kl_ctl.value * kl_loss, stats_to_cpu(flatten_dict(stats))
+        return loss, stats_to_cpu(flatten_dict(stats))
 
 
 def train(model_name=None, single_game=True):
