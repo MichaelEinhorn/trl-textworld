@@ -82,7 +82,7 @@ class PPOTrainer(TRLTrainer):
         "forward_batch_size": 16,
         "epochs_per_game": 4,
         "game_gamma": 0.8,
-        "few_shot": 0,
+        "few_shot": 1,
         "ent_coef" : 0.0, # Entropy coefficient
     }
 
@@ -101,7 +101,7 @@ class PPOTrainer(TRLTrainer):
 
         invalidRew = InvalidReward(value=-1, num_agents=self.params["num_agents"], parentReward=None)
 
-        self.playerKWArgs = getKW(exTurns=0.25, rewardFunc=gameRew)
+        self.playerKWArgs = getKW(exTurns=0.33, rewardFunc=gameRew)
         self.agentKWArgs = getKW(useUnfinished=True, GAMMA=self.params["game_gamma"],
                                  MEMORY_LEN=self.params["few_shot"])
 
@@ -310,6 +310,8 @@ class PPOTrainer(TRLTrainer):
         output = {}
         
         # print("\n" + "batched forward on rank " + str(self.trainer.global_rank))
+        if self.trainer.global_rank == 0:
+            print("batched forward pass ", flush=True)
 
         for i in range(int(bs / fbs)):
             # print("rank ", self.trainer.global_rank, " ref batch ", i)
@@ -320,8 +322,8 @@ class PPOTrainer(TRLTrainer):
             attention_mask = pad_mask(input_ids, self.tokenizer.pad_token_id)
             # print("forward pass mask ", attention_mask)
             
-            # if self.trainer.global_rank == 0:
-            #     print("\r", i, "/", int(bs / fbs), sep="", end="", flush=True)
+            if self.trainer.global_rank == 0:
+                print("\r", i, "/", int(bs / fbs), sep="", end="", flush=True)
 
             with torch.no_grad():
                 # # logits, _, v = self.model(input_ids)
@@ -358,7 +360,8 @@ class PPOTrainer(TRLTrainer):
 
         rem = bs % fbs
         if rem != 0:
-            print("remainder batch ", rem, sep="", end="", flush=True)
+            if self.trainer.global_rank == 0:
+                print("remainder batch ", rem, sep="", end="", flush=True)
             # print("rank ", self.trainer.global_rank, " final ref batch ", rem)
             query_batch = queries[-rem:]
             response_batch = responses[-rem:]

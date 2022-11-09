@@ -263,7 +263,7 @@ class TRLTrainer(pl.LightningModule):
         return stats
     
 def getTrainer(**kwargs):
-    SAVE_FREQUENCY = 1
+    SAVE_FREQUENCY = 4
     from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
     from pytorch_lightning.callbacks import ModelCheckpoint
     checkpoint_callback = ModelCheckpoint(dirpath="checkpoints/", filename="ppo-{epoch:02d}",

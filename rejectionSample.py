@@ -70,7 +70,7 @@ class RejectionTuner(TRLTrainer):
         "epochs_per_game": 4,
         "clear_buffer_each_game": True,
         "train_prompt": True,
-        "game_gamma": 0.8,
+        "game_gamma": 0.6,
         "few_shot": 1,
         # compat with ppo
         'vf_coef': 0,
@@ -164,6 +164,9 @@ class RejectionTuner(TRLTrainer):
         all_values = []
 
         output = {}
+        
+        if self.trainer.global_rank == 0:
+            print("batched forward pass ", flush=True)
 
         for i in range(int(bs / fbs)):
             query_batch = queries[i * fbs:(i + 1) * fbs]
@@ -172,6 +175,9 @@ class RejectionTuner(TRLTrainer):
             input_ids = model_input["input_ids"]
             attention_mask = pad_mask(input_ids, self.tokenizer.pad_token_id)
             # print("forward pass mask ", attention_mask)
+            
+            if self.trainer.global_rank == 0:
+                print("\r", i, "/", int(bs / fbs), sep="", end="", flush=True)
 
             with torch.no_grad():
                 # # logits, _, v = self.model(input_ids)
@@ -207,6 +213,8 @@ class RejectionTuner(TRLTrainer):
 
         rem = bs % fbs
         if rem != 0:
+            if self.trainer.global_rank == 0:
+                print("remainder batch ", rem, sep="", end="", flush=True)
             query_batch = queries[-rem:]
             response_batch = responses[-rem:]
             input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])[
@@ -313,6 +321,8 @@ class RejectionTuner(TRLTrainer):
         # self is passing the model to do forward passes with
         self.player.runGame(self, self.params['game_batch_size'])
         self.agent.fillBuffer()
+        torch.distributed.barrier()
+        
         self.kl_ctl_rew.kl_list = []
         scores, queries, responses, values_next, ret_cross, adv_cross, values, logprobs = self.agent_buffer.sample(
             self.params['game_batch_size'])
@@ -330,6 +340,12 @@ class RejectionTuner(TRLTrainer):
         ref_logprobs = \
         self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True)[
             "ref_logprobs"]
+        
+        torch.distributed.barrier()
+        # if self.trainer.is_global_zero:
+        #     print("waiting batched forward")
+        #     temp_str = input()
+        # torch.distributed.barrier()
 
         timing[f'time/{self.alg_name}/forward_pass'] = time.time() - t
 
@@ -346,8 +362,8 @@ class RejectionTuner(TRLTrainer):
             response = responses[i]
             # use returns discounted across multiple transitions
 
-            score_kl = torch.tensor(ret_cross[i], device=self.device)
-            kl_rew = torch.sum(non_score_reward[i]).to(self.device)
+            score_kl = torch.tensor(ret_cross[i], device="cpu")
+            kl_rew = torch.sum(non_score_reward[i]).to("cpu")
             score_kl += kl_rew
             scores_kl.append(score_kl)
             # use only current rewards
@@ -356,13 +372,30 @@ class RejectionTuner(TRLTrainer):
         for lineItem, score_kl in zip(zip(scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs,
                             values, rewards, non_score_reward), scores_kl):
             self.trainer_buffer.append(lineItem, score_kl)
+        
+        torch.distributed.barrier()
+        # if self.trainer.is_global_zero:
+        #     print("waiting fill buffer")
+        #     temp_str = input()
+        # torch.distributed.barrier()
 
         start_n = len(self.trainer_buffer) * self.trainer.world_size
-        self.trainer_buffer.reject(self.params["batch_size"] * self.trainer.world_size, threshType="top n", device=self.device)
+        # global rejection is causing issues with mp, spawning a bunch of cuda processes and then deadlocking
+        # self.trainer_buffer.rejectGlobal(self.params["batch_size"] * self.trainer.world_size, threshType="top n")
+        self.trainer_buffer.reject(self.params["batch_size"], threshType="top n")
+        
         reject_n = len(self.trainer_buffer)
         if self.trainer.is_global_zero:
             print("rejection ", start_n, " ", reject_n)
             self.rejectRatio = torch.tensor(reject_n / start_n)
+        else:
+            print("rejection rank ", self.trainer.global_rank, " ", start_n, " ", reject_n)
+            
+        torch.distributed.barrier()
+        # if self.trainer.is_global_zero:
+        #     print("waiting reject")
+        #     temp_str = input()
+        # torch.distributed.barrier()
 
     # data is list of strings
     def training_step(self, batch, nb_batch):
@@ -447,6 +480,7 @@ class RejectionTuner(TRLTrainer):
         else:
             gathered_stats = None
         torch.distributed.gather_object(train_stats, object_gather_list=gathered_stats, dst=0)
+        train_stats = []
         if self.trainer.is_global_zero:
             for stats in gathered_stats:
                 self.all_stats.extend(stats)

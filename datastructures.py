@@ -25,26 +25,65 @@ class RejectionBuffer:
     def append(self, t, v):
         self.values.append(v)
         self.text.append(t)
+        
+    def reject(self, p, threshType="top n"):
+       
+        num_frac = int(len(self.values) * p)
+        
+        print("reject ", self.rank)
 
-    def reject(self, p, threshType="frac", device=None):
+        if threshType == "frac":
+            idxs = torch.argsort(torch.stack(self.values))
+            if not self.min:
+                # idxs = idxs[::-1]
+                idxs = torch.flip(idxs, [0])
+
+            idxs = idxs[:num_frac]
+            for i in range(num_frac):
+                tempText.append(self.text[idxs[i]])
+                tempVal.append(self.values[idxs[i]])
+
+        if threshType == "top n":
+            idxs = torch.argsort(torch.stack(self.values))
+            if not self.min:
+                # idxs = idxs[::-1]
+                idxs = torch.flip(idxs, [0])
+            idxs = idxs[:p]
+            tempText = []
+            tempVal = []
+            for i in range(p):
+                tempText.append(self.text[idxs[i]])
+                tempVal.append(self.values[idxs[i]])
+        
+        self.text = tempText
+        self.values = tempVal
+
+    # causing mp issues, spawning a bunch of new cuda processes for some reason
+    def rejectGlobal(self, p, threshType="top n"):
+       
+        num_frac = int(len(self.values) * p * self.world_size)
+        
+        print("reject ", self.rank)
+        
         # gather all data to rank 0 before rejecting
         if self.rank == 0:
-            gathered_values = [None for i in range(self.world_size)]
-            gathered_text = [None for i in range(self.world_size)]
+            # gathered_values = [None for i in range(self.world_size)]
+            # gathered_text = [None for i in range(self.world_size)]
+            gathered_zip = [None for i in range(self.world_size)]
         else:
-            gathered_values = None
-            gathered_text = None
-        torch.distributed.gather_object(self.values, object_gather_list=gathered_values, dst=0)
-        torch.distributed.gather_object(self.text, object_gather_list=gathered_text, dst=0)
+            # gathered_values = None
+            # gathered_text = None
+            gathered_zip = None
+        
+        torch.distributed.gather_object([self.values, self.text], object_gather_list=gathered_zip, dst=0)
+        # torch.distributed.gather_object(self.values, object_gather_list=gathered_values, dst=0)
+        # torch.distributed.gather_object(self.text, object_gather_list=gathered_text, dst=0)
         self.values = []
         self.text = []
         if self.rank == 0:
-            for val, tex in zip(gathered_values, gathered_text):
-                val_dev = []
-                for val_item in val:
-                    val_dev.append(val_item.to(device))
-                    
-                self.values.extend(val_dev)
+            # for val, tex in zip(gathered_values, gathered_text):
+            for val, tex in gathered_zip:
+                self.values.extend(val)
                 self.text.extend(tex)
 
             if threshType == "frac":
@@ -53,13 +92,10 @@ class RejectionBuffer:
                     # idxs = idxs[::-1]
                     idxs = torch.flip(idxs, [0])
 
-                num = len(self.values) * p
-                idxs = idxs[:num]
-                for i in range(num):
+                idxs = idxs[:num_frac]
+                for i in range(num_frac):
                     tempText.append(self.text[idxs[i]])
                     tempVal.append(self.values[idxs[i]])
-                self.text = tempText
-                self.values = tempVal
 
             if threshType == "top n":
                 idxs = torch.argsort(torch.stack(self.values))
@@ -72,8 +108,25 @@ class RejectionBuffer:
                 for i in range(p):
                     tempText.append(self.text[idxs[i]])
                     tempVal.append(self.values[idxs[i]])
-                self.text = tempText
-                self.values = tempVal
+            tempZip = [tempVal, tempText]
+        else:
+            tempZip = [None, None]
+            # if threshType == "frac":
+                # tempVal = [None for i in range(num_frac)]
+                # tempText = [None for i in range(num)]
+            # if threshType == "top n":
+                # tempVal = [None for i in range(p)]
+                # tempText = [None for i in range(p)]
+            
+        torch.distributed.broadcast_object_list(tempZip, src=0)
+        # torch.distributed.broadcast_object_list(tempVal, src=0)
+        # torch.distributed.broadcast_object_list(tempText, src=0)
+        tempVal, tempText = tempZip
+        self.values = []
+        self.text = []
+        for i in range(self.rank, len(tempVal), self.world_size):
+            self.values.append(tempVal[i])
+            self.text.append(tempText[i])
 
     def clear(self):
         self.values = []
@@ -81,26 +134,10 @@ class RejectionBuffer:
 
     def sample(self, batch_size):
         # all samples are on rank 0, shuffle them there and then broadcast to other processes
-        tmpArr = [None, None]
-        if self.rank == 0:
-            idxs = np.random.choice(len(self.values), batch_size * self.world_size, replace=False)
-            tempText = []
-            tempVal = []
-            for i in range(batch_size * self.world_size):
-                tempText.append(self.text[idxs[i]])
-                tempVal.append(self.values[idxs[i]])
-            tmpArr = [tempText, tempVal]
-
-        torch.distributed.broadcast_object_list(tmpArr, src=0)
-
-        tempText = tmpArr[0]
-        tempVal = tmpArr[1]
-
-        text = []
-        val = []
-        for i in range(self.rank, batch_size * self.world_size, self.world_size):
-            text.append(tempText[i])
-            val.append(tempVal[i])
+        indices = np.random.choice(len(self.values), batch_size, replace=False)
+        
+        text = [self.text[idx] for idx in indices]
+        val = [self.values[idx] for idx in indices]
 
         return text, val
 
@@ -273,15 +310,6 @@ class RejectDataset(IterableDataset):
         self.world_size = world_size
 
     def __iter__(self):
-#         objList = [None, None]
-#         if self.rank == 0:
-#             data, reject_scores = self.buffer.sample(self.sample_size)
-#             objList = [data, reject_scores]
-        
-#         torch.distributed.broadcast_object_list(objList, src=0)
-#         data = objList[0]
-#         reject_scores = objList[1]
-
         data, reject_scores = self.buffer.sample(self.sample_size)
 
         scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
