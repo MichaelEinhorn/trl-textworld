@@ -467,8 +467,10 @@ class VectorNLPAgent:
             # print("att ", i, att, start, end, genLengths[i])
             # printFile("genlen, start, end", i, epoch)
             # printFile(str(genLengths[i]) + ", " + str(start) + ", "  + str(end), i, epoch)
-
+            
+            # remove left and right pad
             inp = inp[:, start:end + 1]
+            # split action and prompt
             action_tens = inp[:, -genLengths[i]:]
             prompt_tens = inp[:, :-genLengths[i]]
             # print("inp act prompt shape ", inp.shape, action_tens.shape, prompt_tens.shape, i)

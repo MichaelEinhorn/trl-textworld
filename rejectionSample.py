@@ -195,12 +195,6 @@ class RejectionTuner(TRLTrainer):
 
             for j in range(fbs):
                 # both logits and values are shifted 1 left from the input
-                # right pad
-                # start = len(query_batch[j]) - 1
-                # end = len(query_batch[j]) + len(response_batch[j]) - 1
-                # all_values.append(v[j, start:end])
-                # all_logprobs.append(logprobs[j, start:end])
-                # all_ref_logprobs.append(ref_logprobs[j, start:end])
                 # left pad
                 gen_len = len(response_batch[j])
                 if outputVals:
@@ -235,13 +229,7 @@ class RejectionTuner(TRLTrainer):
 
             for j in range(rem):
                 # both logits and values are shifted 1 left from the input
-                # right pad
-                # start = len(query_batch[j]) - 1
-                # end = len(query_batch[j]) + len(response_batch[j]) - 1
-                # all_values.append(v[j, start:end])
-                # all_logprobs.append(logprobs[j, start:end])
-                # all_ref_logprobs.append(ref_logprobs[j, start:end])
-                # left pad
+                # remove left pad
                 gen_len = len(response_batch[j])
                 if outputVals:
                     all_values.append(v[j, -(gen_len + 1):-1])
@@ -395,7 +383,7 @@ class RejectionTuner(TRLTrainer):
         targets = input_ids[:, 1:]
         target_mask = input_mask[:, 1:]
 
-        logprob = logprobs_from_logits(logits, targets)
+        logprob = logprobs_from_logits(logits_shifted, targets)
 
         ce_loss_batch = torch.tensor(0, device=self.device, dtype=logprob.dtype)
         kl_loss_batch = torch.tensor(0, device=self.device, dtype=logprob.dtype)
@@ -414,12 +402,13 @@ class RejectionTuner(TRLTrainer):
             gen_len = lengths[i][1]
             total_len = lengths[i][2]
 
+            # remove left pad and querry
             targ = targets[i:i+1, -gen_len:]
             logit = logits_shifted[i:i+1, -gen_len:]
             logp = logprob[i:i+1, -gen_len:]
 
-            ref_logp = ref_logprobs[i:i+1, :gen_len]
-            old_logp = old_logprobs[i:i+1, :gen_len]
+            ref_logp = ref_logprobs[i:i+1, -gen_len:]
+            old_logp = old_logprobs[i:i+1, -gen_len:]
 
             if not self.params["train_prompt"]:
                 ce_loss = F.cross_entropy(torch.transpose(logit, 1,2), targ, ignore_index=self.tokenizer.pad_token_id)

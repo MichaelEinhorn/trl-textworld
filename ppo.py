@@ -346,12 +346,6 @@ class PPOTrainer(TRLTrainer):
 
             for j in range(fbs):
                 # both logits and values are shifted 1 left from the input
-                # right pad
-                # start = len(query_batch[j]) - 1
-                # end = len(query_batch[j]) + len(response_batch[j]) - 1
-                # all_values.append(v[j, start:end])
-                # all_logprobs.append(logprobs[j, start:end])
-                # all_ref_logprobs.append(ref_logprobs[j, start:end])
                 # left pad
                 gen_len = len(response_batch[j])
                 if outputVals:
@@ -388,12 +382,6 @@ class PPOTrainer(TRLTrainer):
 
             for j in range(rem):
                 # both logits and values are shifted 1 left from the input
-                # right pad
-                # start = len(query_batch[j]) - 1
-                # end = len(query_batch[j]) + len(response_batch[j]) - 1
-                # all_values.append(v[j, start:end])
-                # all_logprobs.append(logprobs[j, start:end])
-                # all_ref_logprobs.append(ref_logprobs[j, start:end])
                 # left pad
                 gen_len = len(response_batch[j])
                 if outputVals:
@@ -527,10 +515,11 @@ class PPOTrainer(TRLTrainer):
         gen_len = lengths[1]
         total_len = lengths[2]
 
-        values = values[:, :gen_len]
-        rewards = rewards[:, :gen_len]
-        old_logprobs = old_logprobs[:, :gen_len]
-        ref_logprobs = ref_logprobs[:, :gen_len]
+        # remove left pad
+        values = values[:, -gen_len:]
+        rewards = rewards[:, -gen_len:]
+        old_logprobs = old_logprobs[:, -gen_len:]
+        ref_logprobs = ref_logprobs[:, -gen_len:]
 
         for t in reversed(range(gen_len)):
             nextvalues = values[:, t + 1] if t < gen_len - 1 else self.params["game_gamma"] * values_next
@@ -557,10 +546,11 @@ class PPOTrainer(TRLTrainer):
         gen_len = lengths[1]
         total_len = lengths[2]
 
-        values = values[:, :gen_len]
-        rewards = rewards[:, :gen_len]
-        old_logprobs = old_logprobs[:, :gen_len]
-        ref_logprobs = ref_logprobs[:, :gen_len]
+        # removes left pad
+        values = values[:, -gen_len:]
+        rewards = rewards[:, -gen_len:]
+        old_logprobs = old_logprobs[:, -gen_len:]
+        ref_logprobs = ref_logprobs[:, -gen_len:]
 
         #         for t in reversed(range(gen_len)):
         #             nextvalues = values[:, t + 1] if t < gen_len - 1 else self.params["game_gamma"] * values_next
@@ -580,14 +570,9 @@ class PPOTrainer(TRLTrainer):
 
         # only the generation part of the values/logprobs is needed
         # both logits and values are shifted 1 left from the input
-        # start = querry_len - 1
-        # end = querry_len + gen_len - 1
-        # right pad
-        # logprob, vpred = logprob[:, start:end], vpred[:, start:end]
-        # left pad
+        # remove left pad
         # logits were already shifted
         logprob, vpred = logprob[:, -gen_len:], vpred[:, -(gen_len + 1):-1]
-        # logprob, vpred = logprob[:, total_len-gen_len:total_len], vpred[:, total_len-gen_len - 1:total_len-1]\
         
         # print("vf loss rank ", self.trainer.global_rank, flush=True)
         vpredclipped = clip_by_value(vpred,

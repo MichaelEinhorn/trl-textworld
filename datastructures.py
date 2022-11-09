@@ -202,11 +202,11 @@ class RLDatasetCollator():
                 torch.tensor(values_next),
                 torch.tensor(ret_cross),
                 torch.tensor(adv_cross),
-                padded_stack(logprobs),
-                padded_stack(ref_logprobs),
-                padded_stack(values),
-                padded_stack(rewards),
-                padded_stack(non_score_reward)
+                padded_stack(logprobs, side="left"),
+                padded_stack(ref_logprobs, side="left"),
+                padded_stack(values, side="left"),
+                padded_stack(rewards, side="left"),
+                padded_stack(non_score_reward, side="left")
                 )
 
 class DecisionDataset(IterableDataset):
@@ -311,10 +311,10 @@ class RejectDatasetCollator():
                 torch.tensor(values_next),
                 torch.tensor(ret_cross),
                 torch.tensor(adv_cross),
-                padded_stack(logprobs),
-                padded_stack(ref_logprobs),
-                padded_stack(values),
-                padded_stack(rewards),
-                padded_stack(non_score_reward),
+                padded_stack(logprobs, side="left"),
+                padded_stack(ref_logprobs, side="left"),
+                padded_stack(values, side="left"),
+                padded_stack(rewards, side="left"),
+                padded_stack(non_score_reward, side="left"),
                 torch.tensor(reject_scores)
                 )
