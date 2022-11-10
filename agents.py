@@ -158,6 +158,8 @@ class Memory:
         inventoryStr = infos["inventory"][i]
         if "nothing" in inventoryStr:
             inventoryStr = ""
+        else:
+            inventoryStr = inventoryStr + " "
         # input_ = "{}{}{} You can only choose a single action. You take the action to ".format(obs, inventoryStr,
         #                                                    admissible_commands_str)
         input_ = "{}{}{} You choose the action to".format(obs, inventoryStr,

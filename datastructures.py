@@ -30,7 +30,7 @@ class RejectionBuffer:
        
         num_frac = int(len(self.values) * p)
         
-        print("reject ", self.rank)
+        # print("reject ", self.rank)
 
         if threshType == "frac":
             idxs = torch.argsort(torch.stack(self.values))

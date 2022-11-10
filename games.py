@@ -226,6 +226,7 @@ class VectorPlayer:
             ex = 0
             if self.exTurns is not None:
                 ex = exTurnSampler.sample()
+                # print("example ", ex, " T ", ex == 1)
                 if ex == 1:
                     stepsCompleted = 0
                 command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel, exTurn=ex)

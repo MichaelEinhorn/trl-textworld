@@ -388,8 +388,8 @@ class RejectionTuner(TRLTrainer):
         if self.trainer.is_global_zero:
             print("rejection ", start_n, " ", reject_n)
             self.rejectRatio = torch.tensor(reject_n / start_n)
-        else:
-            print("rejection rank ", self.trainer.global_rank, " ", start_n, " ", reject_n)
+        # else:
+        #     print("rejection rank ", self.trainer.global_rank, " ", start_n, " ", reject_n)
             
         torch.distributed.barrier()
         # if self.trainer.is_global_zero:
@@ -474,6 +474,12 @@ class RejectionTuner(TRLTrainer):
                 policy=dict(entropy=entropy, approxkl=approxkl, policykl=policykl, ratio=ratio),
             )
             train_stats.append(stats_to_cpu(flatten_dict(stats)))
+            
+        # torch.distributed.barrier()
+        # if self.trainer.is_global_zero:
+        #     print("waiting before gather stat")
+        #     temp_str = input()
+        # torch.distributed.barrier()
 
         if self.trainer.is_global_zero:
             gathered_stats = [None for i in range(self.trainer.world_size)]
@@ -484,6 +490,12 @@ class RejectionTuner(TRLTrainer):
         if self.trainer.is_global_zero:
             for stats in gathered_stats:
                 self.all_stats.extend(stats)
+                
+        # torch.distributed.barrier()
+        # if self.trainer.is_global_zero:
+        #     print("waiting after gather stat")
+        #     temp_str = input()
+        # torch.distributed.barrier()
 
         kl_loss_batch /= fbs
         ent_loss_batch /= fbs
