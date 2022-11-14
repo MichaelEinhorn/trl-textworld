@@ -110,15 +110,27 @@ class HumanAgent(textworld.gym.Agent):
         return actionList
 
 
+# retains memory and formats prompts for the Agent
 class Memory:
     def __init__(self, MEMORY_LEN=1, num_agents=1):
         self.MEMORY_LEN = MEMORY_LEN
         self.num_agents = num_agents
 
         self.memory = [deque(maxlen=self.MEMORY_LEN) for i in range(self.num_agents)]
+        self.rng = np.random.default_rng(seed=42)
 
     def clear(self, i):
         self.memory[i].clear()
+
+    # removes examine actions
+    def filterAdmCmd(self, i, cmd_list, infos, examine=False, shuffle=False):
+        out = []
+        for cmd in cmd_list:
+            if not "examine" in cmd or examine:
+                out.append(cmd)
+        if shuffle:
+            self.rng.shuffle(out)
+        return out
 
     # obs is just the observation for the current index
     # infos is a dict with every index
@@ -147,12 +159,13 @@ class Memory:
         for mem in self.memory[i]:
             pastStates = pastStates + mem + "\n"
         admissible_commands_str = "Your possible actions are "
-        for cmd_idx in range(len(infos["admissible_commands"][i]) - 1):
-            adm_cmd = infos["admissible_commands"][i][cmd_idx]
-            if not "examine" in adm_cmd:
-                # for adm_cmd in infos["admissible_commands"][i]:
-                admissible_commands_str += adm_cmd + ", "
-        adm_cmd = infos["admissible_commands"][i][len(infos["admissible_commands"][i]) - 1]
+
+        adm_cmd_list = self.filterAdmCmd(infos["admissible_commands"][i], i, infos, examine=False)
+
+        for cmd_idx in range(len(adm_cmd_list) - 1):
+            adm_cmd = adm_cmd_list[cmd_idx]
+            admissible_commands_str += adm_cmd + ", "
+        adm_cmd = adm_cmd_list[len(adm_cmd_list) - 1]
         admissible_commands_str += "or " + adm_cmd + "."
         # infos["description"][i]
         inventoryStr = infos["inventory"][i]
@@ -332,6 +345,7 @@ class VectorNLPAgent:
             if kwargs["exTurn"] == 1:
                 for i in range(self.num_agents):
                     commands = infos["admissible_commands"][i]
+                    commands = self.memory.filterAdmCmd(commands, i, infos, examine=False)
                     idx = np.random.choice(len(commands))
                     action = commands[idx] + "."
                     input_ = inputList[i]
@@ -347,6 +361,7 @@ class VectorNLPAgent:
             if kwargs["decisionTrans"]:
                 for i in range(self.num_agents):
                     commands = infos["admissible_commands"][i]
+                    commands = self.memory.filterAdmCmd(commands, i, infos, examine=False)
                     idx = np.random.choice(len(commands))
                     action = commands[idx] + "."
                     input_ = inputList[i]
@@ -497,7 +512,8 @@ class VectorNLPAgent:
             # if i == 0:
             #     print("first value in action", first_value)
             #     # print(value)
-            printFile("first value in action " + str(first_value.item()), i, epoch, self.rank, self.num_agents)
+            # printFile("first value in action " + str(first_value.item()), i, epoch, self.rank, self.num_agents)
+            printFile("first value in action " + str(values.tolist()), i, epoch, self.rank, self.num_agents)
             printFile("action probability " + str(torch.exp(torch.sum(logp)).item()), i, epoch, self.rank, self.num_agents)
             # only grab last token
             # value = values[i, genLengths[i] - 1, 0]
