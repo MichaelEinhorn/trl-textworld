@@ -3,29 +3,52 @@ import os
 from glob import glob
 import gym
 import textworld.gym
-
+import subprocess
+import concurrent.futures
 import numpy as np
 
-def getEnvs(download=True):
-    if download:
-        os.system("wget https://aka.ms/textworld/notebooks/data.zip")
-        os.system("unzip -nq data.zip && rm -f data.zip")
-    else:
-        # Same as !make_games.sh
-        os.system(
-            "tw-make tw-simple --rewards dense    --goal detailed --seed 18 --test --silent -f --output games/tw-rewardsDense_goalDetailed.z8")
-        os.system(
-            "tw-make tw-simple --rewards balanced --goal detailed --seed 18 --test --silent -f --output games/tw-rewardsBalanced_goalDetailed.z8")
-        os.system(
-            "tw-make tw-simple --rewards sparse   --goal detailed --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalDetailed.z8")
-        os.system(
-            "tw-make tw-simple --rewards dense    --goal brief    --seed 18 --test --silent -f --output games/tw-rewardsDense_goalBrief.z8")
-        os.system(
-            "tw-make tw-simple --rewards balanced --goal brief    --seed 18 --test --silent -f --output games/tw-rewardsBalanced_goalBrief.z8")
-        os.system(
-            "tw-make tw-simple --rewards sparse   --goal brief    --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalBrief.z8")
-        os.system(
-            "tw-make tw-simple --rewards sparse   --goal none     --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalNone.z8")
+def getEnvs(download=True, remove=False):
+    if remove:
+        os.system('rm -rf games/')
+        os.system('rm -rf training_games/')
+        os.system('rm -rf testing_games/')
+
+    
+
+    if not os.path.isdir('training_games'):
+        if download:
+            os.system("wget https://aka.ms/textworld/notebooks/data.zip")
+            os.system("unzip -nq data.zip && rm -f data.zip")
+        else:
+            print("generating games")
+            cpu = os.cpu_count()
+            print('cpu count: ', cpu)
+
+            programs = []
+            for i in range(100):
+                programs.append(
+                 f"tw-make tw-simple --rewards dense    --goal detailed --seed {i + 42} --silent -f --output training_games/tw-simple-{i + 42}.z8")
+            
+            i = 0
+            with concurrent.futures.ThreadPoolExecutor(max_workers=cpu) as executor:
+                for result in executor.map(lambda x: subprocess.run(x, shell=True), programs):
+                    print(f"\r{i}/100", end="", flush=True)
+                    i += 1
+            print("")
+            # os.system(
+            #     "tw-make tw-simple --rewards dense    --goal detailed --seed 18 --test --silent -f --output games/tw-rewardsDense_goalDetailed.z8")
+            # os.system(
+            #     "tw-make tw-simple --rewards balanced --goal detailed --seed 18 --test --silent -f --output games/tw-rewardsBalanced_goalDetailed.z8")
+            # os.system(
+            #     "tw-make tw-simple --rewards sparse   --goal detailed --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalDetailed.z8")
+            # os.system(
+            #     "tw-make tw-simple --rewards dense    --goal brief    --seed 18 --test --silent -f --output games/tw-rewardsDense_goalBrief.z8")
+            # os.system(
+            #     "tw-make tw-simple --rewards balanced --goal brief    --seed 18 --test --silent -f --output games/tw-rewardsBalanced_goalBrief.z8")
+            # os.system(
+            #     "tw-make tw-simple --rewards sparse   --goal brief    --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalBrief.z8")
+            # os.system(
+            #     "tw-make tw-simple --rewards sparse   --goal none     --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalNone.z8")
 
 
 # Reward is the gain/loss in score.
@@ -272,7 +295,7 @@ class VectorPlayer:
 # human player
 if __name__ == "__main__":
     from agents import HumanAgent
-    getEnvs()
+    getEnvs(download=False)
 
     gameRew = GameReward(value=1, num_agents=1)
     gameRew = WinReward(value=100, num_agents=1, parentReward=gameRew)

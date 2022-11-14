@@ -123,7 +123,7 @@ class Memory:
         self.memory[i].clear()
 
     # removes examine actions
-    def filterAdmCmd(self, i, cmd_list, infos, examine=False, shuffle=False):
+    def filterAdmCmd(self, cmd_list, i, infos, examine=False, shuffle=False):
         out = []
         for cmd in cmd_list:
             if not "examine" in cmd or examine:
@@ -160,7 +160,7 @@ class Memory:
             pastStates = pastStates + mem + "\n"
         admissible_commands_str = "Your possible actions are "
 
-        adm_cmd_list = self.filterAdmCmd(infos["admissible_commands"][i], i, infos, examine=False)
+        adm_cmd_list = self.filterAdmCmd(infos["admissible_commands"][i], i, infos, examine=False, shuffle=True)
 
         for cmd_idx in range(len(adm_cmd_list) - 1):
             adm_cmd = adm_cmd_list[cmd_idx]
