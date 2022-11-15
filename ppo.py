@@ -82,7 +82,7 @@ class PPOTrainer(TRLTrainer):
         "forward_batch_size": 16,
         "epochs_per_game": 4,
         "game_gamma": 0.8,
-        "few_shot": 1,
+        "few_shot": 0,
         "ent_coef" : 0.0, # Entropy coefficient
     }
 
@@ -646,6 +646,7 @@ def train(model_name=None, single_game=True):
     FORWARD_BATCH = 8
     LOG_FREQUENCY = 1
     NUM_AGENTS = 8
+    PPO_EPOCHS = 1
 
     trainer = trlTrainer.getTrainer()
     # print("rank out of world :", trainer.global_rank, " " , trainer.world_size)
@@ -658,7 +659,7 @@ def train(model_name=None, single_game=True):
               NUM_AGENTS)
 
     ppo_config = {'batch_size': UPDATE_FREQUENCY, 'forward_batch_size': FORWARD_BATCH, "log_freq": LOG_FREQUENCY,
-                  "num_agents": NUM_AGENTS, "single_game": single_game}
+                  "num_agents": NUM_AGENTS, "single_game": single_game, "epochs_per_game":PPO_EPOCHS}
     ppo_trainer = PPOTrainer(model_name=model_name, **ppo_config)
 
     trainer.fit(ppo_trainer)
@@ -667,7 +668,8 @@ def train(model_name=None, single_game=True):
 if __name__ == "__main__":
     import argparse
 
-    seed_everything(42)
+    seed_everything(2061630618)
+    # seed_everything(42)
 
     # model_name = 'gpt2'
     # model_name = 'gpt2-medium'

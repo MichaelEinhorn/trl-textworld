@@ -21,6 +21,8 @@ from core import logprobs_from_logits
 import string
 import re
 
+import random
+
 
 def clean_str(s):
     allowed_chars = " " + string.ascii_letters + string.digits + ".?'"
@@ -42,7 +44,7 @@ def printFile(s, i, epoch, rank, num_agents):
 class RandomAgent(textworld.gym.Agent):
     """ Agent that randomly selects a command from the admissible ones. """
 
-    def __init__(self, seed=1234, num_agents=1, **kwargs):
+    def __init__(self, seed=1516516984916, num_agents=1, **kwargs):
         self.seed = seed
         self.rng = np.random.RandomState(self.seed)
         self.num_agents=num_agents
@@ -60,7 +62,7 @@ class RandomAgent(textworld.gym.Agent):
 class HumanAgent(textworld.gym.Agent):
     """ Agent that randomly selects a command from the admissible ones. """
 
-    def __init__(self, seed=1234, num_agents=1, MEMORY_LEN=1, **kwargs):
+    def __init__(self, seed=1516516984916, num_agents=1, MEMORY_LEN=1, **kwargs):
         self.seed = seed
         self.rng = np.random.RandomState(self.seed)
         self.num_agents=num_agents
@@ -117,7 +119,6 @@ class Memory:
         self.num_agents = num_agents
 
         self.memory = [deque(maxlen=self.MEMORY_LEN) for i in range(self.num_agents)]
-        self.rng = np.random.default_rng(seed=42)
 
     def clear(self, i):
         self.memory[i].clear()
@@ -129,7 +130,7 @@ class Memory:
             if not "examine" in cmd or examine:
                 out.append(cmd)
         if shuffle:
-            self.rng.shuffle(out)
+            random.shuffle(out)
         return out
 
     # obs is just the observation for the current index
@@ -160,7 +161,7 @@ class Memory:
             pastStates = pastStates + mem + "\n"
         admissible_commands_str = "Your possible actions are "
 
-        adm_cmd_list = self.filterAdmCmd(infos["admissible_commands"][i], i, infos, examine=False, shuffle=True)
+        adm_cmd_list = self.filterAdmCmd(infos["admissible_commands"][i], i, infos, examine=False, shuffle=False)
 
         for cmd_idx in range(len(adm_cmd_list) - 1):
             adm_cmd = adm_cmd_list[cmd_idx]
@@ -175,7 +176,7 @@ class Memory:
             inventoryStr = inventoryStr + " "
         # input_ = "{}{}{} You can only choose a single action. You take the action to ".format(obs, inventoryStr,
         #                                                    admissible_commands_str)
-        input_ = "{}{}{} You choose the action to".format(obs, inventoryStr,
+        input_ = "{}{}{} You choose the action to ".format(obs, inventoryStr,
                                                            admissible_commands_str)
         prompt = pastStates + input_
         return prompt, input_
@@ -324,7 +325,7 @@ class VectorNLPAgent:
         
         if self.rng is None:
             self.rng = torch.Generator(device=lightmodel.device)
-            self.rng.manual_seed(self.rng.initial_seed() + self.rank)
+            self.rng.manual_seed(2061630618 + self.rank)
 
         # infos is dict of lists
         for i in range(self.num_agents):
@@ -513,7 +514,7 @@ class VectorNLPAgent:
             #     print("first value in action", first_value)
             #     # print(value)
             # printFile("first value in action " + str(first_value.item()), i, epoch, self.rank, self.num_agents)
-            printFile("first value in action " + str(values.tolist()), i, epoch, self.rank, self.num_agents)
+            printFile("token values " + str(values.tolist()), i, epoch, self.rank, self.num_agents)
             printFile("action probability " + str(torch.exp(torch.sum(logp)).item()), i, epoch, self.rank, self.num_agents)
             # only grab last token
             # value = values[i, genLengths[i] - 1, 0]

@@ -170,7 +170,6 @@ class LetterReward:
 
 class VectorPlayer:
     def __init__(self, agent, path, rewardFunc=None, max_step=100, verbose=True, num_agents=1, rank=0, world_size=1, **kwargs):
-        # torch.manual_seed(20211021 + rank)  # For reproducibility when using action sampling.
         self.rewardFunc = rewardFunc
         if self.rewardFunc is None:
             self.rewardFunc = GameReward(num_agents=num_agents)
@@ -196,7 +195,10 @@ class VectorPlayer:
             self.gamefiles = glob(os.path.join(path, "*.z8"))
 
         # split games between processes
+        # results are returned in arbitrary order
         self.gamefiles = [self.gamefiles[i] for i in range(rank, len(self.gamefiles), world_size)]
+        # sort gamefiles alphabetically
+        self.gamefiles.sort()
 
         print(self.gamefiles)
         self.env_id = textworld.gym.register_games(self.gamefiles,
