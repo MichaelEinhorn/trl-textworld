@@ -130,6 +130,14 @@ class TRLTrainer(pl.LightningModule):
             return config.get('offload_optimizer') # or config.get('offload_param')
         return False
 
+    @property
+    def deepspeed_stage(self):
+        strategy = self.trainer.strategy
+        if isinstance(strategy, DeepSpeedStrategy):
+            config = strategy.config['zero_optimization']
+            return config.get('stage')
+        return None
+
     # appears to have no effect on deepspeed checkpoint size
     # def on_save_checkpoint(self, checkpoint):
     #     keyList = list(checkpoint['state_dict'].keys())

@@ -1,45 +1,33 @@
 from transformers import top_k_top_p_filtering
 from transformers.modeling_outputs import ModelOutput
 from torch import nn
-from torch.nn import Identity
+from copy import deepcopy
+import os
+from functools import reduce
+from itertools import chain
+import deepspeed
 
 
 class ValueHead(nn.Module):
     """The ValueHead class implements a head for GPT2 that returns a scalar for each output token."""
 
-    def __init__(self, model_name):
+    def __init__(self, n_embd=700, n_out=1, detach_head=False, layers=1, scale=2):
         super().__init__()
-        
-        from transformers import AutoConfig
-        config = AutoConfig.from_pretrained(model_name)
-        config.num_labels = 1
             
-        self.detach_head = False
+        self.detach_head = detach_head
 
-        self.summary = nn.Linear(config.hidden_size, 1)
+        if layers == 1: # from trl
+            self.summary = nn.Linear(n_embd, n_out)
+        elif layers == 2: # from trlx make head
+            self.summary = nn.Sequential(nn.Linear(n_embd, int(n_embd * scale)), nn.ReLU(), nn.Linear(int(n_embd * scale), n_out))
+        else:
+            raise NotImplementedError("Only 1 or 2 layers are supported for the value head.")
 
-        self.activation = Identity()
-        if hasattr(config, "summary_activation") and config.summary_activation == "tanh":
-            self.activation = nn.Tanh()
-
-        self.first_dropout = Identity()
-        if hasattr(config, "summary_first_dropout") and config.summary_first_dropout > 0:
-            self.first_dropout = nn.Dropout(config.summary_first_dropout)
-
-        self.last_dropout = Identity()
-        if hasattr(config, "summary_last_dropout") and config.summary_last_dropout > 0:
-            self.last_dropout = nn.Dropout(config.summary_last_dropout)
-
-        self.flatten = nn.Flatten()
-
-    def forward(self, hidden_states, cls_index=None):
+    def forward(self, hidden_states):
         if self.detach_head:
             output = hidden_states.detach()
         else:
             output = hidden_states
-        output = self.first_dropout(output)
-        output = self.summary(output)
-        output = self.activation(output)
-        output = self.last_dropout(output)
 
+        output = self.summary(output)
         return output

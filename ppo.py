@@ -32,6 +32,7 @@ from games import VectorPlayer, getEnvs
 from agents import VectorNLPAgent
 
 from transformers import DataCollatorForLanguageModeling
+from transformers import AutoConfig
 
 import trlTrainer
 from trlTrainer import TRLTrainer
@@ -83,7 +84,12 @@ class PPOTrainer(TRLTrainer):
         "epochs_per_game": 4,
         "game_gamma": 0.8,
         "few_shot": 0,
-        "ent_coef" : 0.0, # Entropy coefficient
+        # Entropy coefficient
+        "ent_coef" : 0.0,
+        # value head
+        "value_head_layers": 2, # 1 for a single linear layer like trl, 2 for linear relu linear like trlx
+        "value_head_scale": 2, # factor on hidden state size in value head
+        "value_head_detach": False # allow gradients to flow into the model
     }
 
     def __init__(self, model_name=None, **params):
@@ -115,7 +121,12 @@ class PPOTrainer(TRLTrainer):
     #     super().setup(stage=stage)
     def configure_sharded_model(self):
         if not hasattr(self, "valueHead"):
-            self.valueHead = ValueHead(self.model_name)
+            config = AutoConfig.from_pretrained(model_name)
+            n_embd = config.hidden_size
+            layers = self.params["value_head_layers"]
+            scale = self.params["value_head_scale"]
+            detach = self.params["value_head_detach"]
+            self.valueHead = ValueHead(n_embd=n_embd, n_out=1, detach_head=detach, layers=layers, scale=scale)
 
     def on_test_epoch_end(self):
         self.saveStats(filename="stats/test.pt")
