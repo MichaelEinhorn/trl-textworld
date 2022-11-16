@@ -176,13 +176,16 @@ class Memory:
             inventoryStr = inventoryStr + " "
         # input_ = "{}{}{} You can only choose a single action. You take the action to ".format(obs, inventoryStr,
         #                                                    admissible_commands_str)
-        input_ = "{}{}{} You choose the action to ".format(obs, inventoryStr,
+        input_ = "{}{}{} You choose the action: ".format(obs, inventoryStr,
                                                            admissible_commands_str)
         prompt = pastStates + input_
         return prompt, input_
 
     def append(self, i, input_, action):
-        self.memory[i].append(input_ + action)
+        if not input_.endswith(" ") and not action.startswith(" "):
+           self.memory[i].append(input_ + " " + action)
+        else:
+            self.memory[i].append(input_ + action)
 
 
 class VectorNLPAgent:

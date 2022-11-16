@@ -70,7 +70,7 @@ class PPOTrainer(TRLTrainer):
         "horizon": 10000,
         # KL added to rewards at start of PPO Epochs
         "adap_kl_ctrl_rew": False,
-        "init_kl_coef_rew": 0.1,
+        "init_kl_coef_rew": 0.0,
         "target_rew": 6,
         "horizon_rew": 10000,
         # end KL
@@ -83,7 +83,7 @@ class PPOTrainer(TRLTrainer):
         "forward_batch_size": 16,
         "epochs_per_game": 4,
         "game_gamma": 0.8,
-        "few_shot": 0,
+        "few_shot": 1,
         # Entropy coefficient
         "ent_coef" : 0.0,
         # value head
@@ -117,8 +117,6 @@ class PPOTrainer(TRLTrainer):
         # print(self.playerKWArgs)
         # print(self.agentKWArgs)
 
-    # def setup(self, stage=None):
-    #     super().setup(stage=stage)
     def configure_sharded_model(self):
         if not hasattr(self, "valueHead"):
             config = AutoConfig.from_pretrained(model_name)
@@ -127,6 +125,9 @@ class PPOTrainer(TRLTrainer):
             scale = self.params["value_head_scale"]
             detach = self.params["value_head_detach"]
             self.valueHead = ValueHead(n_embd=n_embd, n_out=1, detach_head=detach, layers=layers, scale=scale)
+            if self.trainer.is_global_zero:
+                summary(self.valueHead)
+
 
     def on_test_epoch_end(self):
         self.saveStats(filename="stats/test.pt")
@@ -652,11 +653,12 @@ class PPOTrainer(TRLTrainer):
 
 def train(model_name=None, single_game=True):
     from time import time
+    import argparse
 
-    UPDATE_FREQUENCY = 64
-    FORWARD_BATCH = 8
+    UPDATE_FREQUENCY = 128
+    FORWARD_BATCH = 16
     LOG_FREQUENCY = 1
-    NUM_AGENTS = 8
+    NUM_AGENTS = 16
     PPO_EPOCHS = 1
 
     trainer = trlTrainer.getTrainer()

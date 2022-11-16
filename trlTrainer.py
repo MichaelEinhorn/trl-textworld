@@ -164,7 +164,8 @@ class TRLTrainer(pl.LightningModule):
 
 
         # print(self.model.config.torch_dtype)
-        # summary(self.model)
+        if self.trainer.is_global_zero:
+            summary(self.model)
         
         if self.trainer.is_global_zero:
             getEnvs()
