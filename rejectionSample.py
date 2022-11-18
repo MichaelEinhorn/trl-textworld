@@ -306,8 +306,12 @@ class RejectionTuner(TRLTrainer):
                                        self.params['log_freq'] * self.params['batch_size'] // self.params[
                                            f'epochs_per_game'])
 
+        flatparams = flatten_dict(self.params, prefix="params/")
+        flatcfg = flatten_dict(self.model.config.to_diff_dict(), prefix="config/")
         # timing[f'time/{self.alg_name}/total'] = time.time() - t0
         stats.update(timing)
+        stats.update(flatparams)
+        stats.update(flatcfg)
         # print(stats)
         t = time.time()
         torch.save(stats, filename)

@@ -61,11 +61,11 @@ class PPOTrainer(TRLTrainer):
     default_params = {
         "alg_name": "ppo",
         # "lr": 1.41e-5,
-        "lr": 0.7e-5,
+        "lr": 0.1e-5,
         "reference": True,
         # KL Calcuated per forward batch importance corrected exact gradients
         "adap_kl_ctrl": False,
-        "init_kl_coef": 0.0,
+        "init_kl_coef": 0.05,
         "target": 6,
         "horizon": 10000,
         # KL added to rewards at start of PPO Epochs
@@ -74,15 +74,16 @@ class PPOTrainer(TRLTrainer):
         "target_rew": 6,
         "horizon_rew": 10000,
         # end KL
+        "whiten_adv": False,
         "gamma": 1,
         "lam": 0.95,
         "cliprange": .2,
         "cliprange_value": .2,
-        "vf_coef": .1,
+        "vf_coef": 0.5,
         "batch_size": 256,
         "forward_batch_size": 16,
-        "epochs_per_game": 4,
-        "game_gamma": 0.8,
+        "epochs_per_game": 1,
+        "game_gamma": 0.6,
         "few_shot": 1,
         # Entropy coefficient
         "ent_coef" : 0.0,
@@ -193,8 +194,12 @@ class PPOTrainer(TRLTrainer):
                                self.params['log_freq'] * self.params['batch_size'] // self.params[
                                    f'epochs_per_game'])
 
+        flatparams = flatten_dict(self.params, prefix="params/")
+        flatcfg = flatten_dict(self.model.config.to_diff_dict(), prefix="config/")
         # timing[f'time/{self.alg_name}/total'] = time.time() - t0
         stats.update(timing)
+        stats.update(flatparams)
+        stats.update(flatcfg)
         # print(stats)
         t = time.time()
         torch.save(stats, filename)
@@ -545,7 +550,8 @@ class PPOTrainer(TRLTrainer):
 
         returns = advantages + values
         # whiten as a batch instead
-        advantages = whiten(advantages)
+        if self.params["whiten_adv"]:
+            advantages = whiten(advantages)
         advantages = advantages.detach()
 
         return returns, advantages
@@ -656,7 +662,7 @@ def train(model_name=None, single_game=True):
     import argparse
 
     UPDATE_FREQUENCY = 128
-    FORWARD_BATCH = 16
+    FORWARD_BATCH = 8
     LOG_FREQUENCY = 1
     NUM_AGENTS = 16
     PPO_EPOCHS = 1

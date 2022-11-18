@@ -10,7 +10,7 @@ WANDB_PADDING = -1
 def getKW(**kwargs):
     return kwargs
 
-def flatten_dict(nested, sep='/'):
+def flatten_dict(nested, sep='/', prefix=''):
     """Flatten dictionary and concatenate nested keys with separator."""
 
     def rec(nest, prefix, into):
@@ -23,7 +23,7 @@ def flatten_dict(nested, sep='/'):
                 into[prefix + k] = v
 
     flat = {}
-    rec(nested, '', flat)
+    rec(nested, prefix, flat)
     return flat
 
 def pad_mask(input_ids, pad_token):
