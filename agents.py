@@ -25,7 +25,7 @@ import random
 
 
 def clean_str(s):
-    allowed_chars = " " + string.ascii_letters + string.digits + ".?'"
+    allowed_chars = " " + string.ascii_letters + string.digits + ".?'-"
     s = re.sub(f"[^{allowed_chars}]", "", s)
     return s
 
@@ -176,7 +176,7 @@ class Memory:
             inventoryStr = inventoryStr + " "
         # input_ = "{}{}{} You can only choose a single action. You take the action to ".format(obs, inventoryStr,
         #                                                    admissible_commands_str)
-        input_ = "{}{}{} You choose the action: ".format(obs, inventoryStr,
+        input_ = "{}{}{} You choose the action to ".format(obs, inventoryStr,
                                                            admissible_commands_str)
         prompt = pastStates + input_
         return prompt, input_
