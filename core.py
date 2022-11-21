@@ -26,6 +26,10 @@ def flatten_dict(nested, sep='/', prefix=''):
     rec(nested, prefix, flat)
     return flat
 
+def flatten_list(tensor_list):
+    """Flatten a list of tensors."""
+    return torch.cat([t.flatten() for t in tensor_list])
+
 def pad_mask(input_ids, pad_token):
     return torch.where(torch.eq(input_ids, pad_token), 0, 1)
 
@@ -61,32 +65,51 @@ def logprobs_from_logits(logits, labels):
     return logpy
 
 
-def whiten(values, shift_mean=True):
+def whiten(values, shift_mean=True, mean=None, var=None):
     """Whiten values."""
     # single element is equal to mean
     if values.shape[1] == 1:
         if not shift_mean:
             return values
         return torch.tensor(0, dtype=values.dtype)
-    mean, var = torch.mean(values), torch.var(values)
+
+    if mean is None:
+        mean = torch.mean(values)
+    if var is None:
+        var = torch.var(values)
+
     # 1e-8 is too small for fp16
     whitened = (values - mean) * torch.rsqrt(var + 1e-6)
     if not shift_mean:
         whitened += mean
     return whitened
 
-def whitenBatch(valuesList, rank=0, world_size=1, shift_mean=True):
+def whitenBatch(valuesList, shift_mean=True, mean=None, var=None):
+    """Whiten values."""
+    # single element is equal to mean
+    if var is None or mean is None:
+        flat = flatten_list(valuesList)
+        if mean is None:
+            mean = torch.mean(flat)
+        if var is None:
+            var = torch.var(flat)
+
+    whitenedList = []
+    for values in valuesList:
+        whitened = whiten(values, shift_mean=shift_mean, mean=mean, var=var)
+        whitenedList.append(whitened)
+    return whitenedList
+
+
+def whitenGlobal(valuesList, rank=0, world_size=1, shift_mean=True):
     """Whiten values."""
     # single element is equal to mean
     if len(valuesList) == 1 and valuesList[0].shape[1] == 1 and world_size == 1:
         if not shift_mean:
             return valuesList
-        return [torch.tensor(0, dtype=values.dtype)]
+        return [torch.tensor(0, dtype=valuesList[0].dtype)]
     
-    flatList = []
-    for i in range(len(valuesList)):
-        flatList.append(valuesList[i].flatten())
-    flatList = torch.cat(flatList)
+    flatList = flatten_list(valuesList)
     gatherList = None
     if rank == 0:
         gatherList = [None for i in range(world_size)]
@@ -108,15 +131,7 @@ def whitenBatch(valuesList, rank=0, world_size=1, shift_mean=True):
     torch.distributed.broadcast(meanVar, src=0)
     mean, var = meanVar[0], meanVar[1]
     
-    whitenedList = []
-    
-    # 1e-8 is too small for fp16
-    for i in range(len(valuesList)):
-        whitened = (valuesList[i] - mean) * torch.rsqrt(var + 1e-6)
-        if not shift_mean:
-            whitened += mean
-        whitenedList.append(whitened)
-    return whitenedList
+    return whitenBatch(valuesList, shift_mean=shift_mean, mean=mean, var=var)
 
 
 def clip_by_value(x, tensor_min, tensor_max):
