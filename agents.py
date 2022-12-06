@@ -27,6 +27,8 @@ import random
 def clean_str(s):
     allowed_chars = " " + string.ascii_letters + string.digits + ".?'-"
     s = re.sub(f"[^{allowed_chars}]", "", s)
+    # remove endoftext potentially causing EOFError
+    s = s.replace("endoftext", "")
     return s
 
 
@@ -44,7 +46,7 @@ def printFile(s, i, epoch, rank, num_agents):
 class RandomAgent(textworld.gym.Agent):
     """ Agent that randomly selects a command from the admissible ones. """
 
-    def __init__(self, seed=1516516984916, num_agents=1, **kwargs):
+    def __init__(self, seed=2061630618, num_agents=1, **kwargs):
         self.seed = seed
         self.rng = np.random.RandomState(self.seed)
         self.num_agents=num_agents
@@ -62,7 +64,7 @@ class RandomAgent(textworld.gym.Agent):
 class HumanAgent(textworld.gym.Agent):
     """ Agent that randomly selects a command from the admissible ones. """
 
-    def __init__(self, seed=1516516984916, num_agents=1, MEMORY_LEN=1, **kwargs):
+    def __init__(self, seed=2061630618, num_agents=1, MEMORY_LEN=1, **kwargs):
         self.seed = seed
         self.rng = np.random.RandomState(self.seed)
         self.num_agents=num_agents
@@ -70,6 +72,9 @@ class HumanAgent(textworld.gym.Agent):
         self.MEMORY_LEN = MEMORY_LEN
         self.memory = Memory(MEMORY_LEN=MEMORY_LEN, num_agents=num_agents)
         self.lastActionInfos = [None for i in range(self.num_agents)]
+
+        # textworld is adding an extra turn at the end of the game
+        self.gameResettingExtraTurn = [False for i in range(self.num_agents)]
 
     @property
     def infos_to_request(self) -> EnvInfos:
@@ -80,10 +85,14 @@ class HumanAgent(textworld.gym.Agent):
     
     def report(self, rewards, score, done, infos, **kwargs):
         print("report --------------------------------------------------------------\n\n\n")
-        print(rewards)
+        print(rewards, infos["won"], infos["lost"], done)
         for i in range(self.num_agents):
+            if self.gameResettingExtraTurn[i]:
+                self.gameResettingExtraTurn[i] = False
+                continue
             print("invalid ", i, " ", infos["last_action"][i] is None or infos["last_action"][i] == self.lastActionInfos[i])
             if done[i]:
+                print("done clearing mem")
                 self.memory.clear(i)
         self.lastActionInfos = infos["last_action"]
 
@@ -93,6 +102,11 @@ class HumanAgent(textworld.gym.Agent):
         actionList = []
         # infos is dict of lists
         for i in range(self.num_agents):
+            if infos["won"][i] or infos["lost"][i]:
+                actionList.append("placeholder")
+                self.gameResettingExtraTurn[i] = True
+                continue
+
             obs = observation[i]
             # Build agent's observation: feedback + look + inventory.
             prompt, input_ = self.memory.getFormattedPrompt(i, obs, infos)
@@ -114,10 +128,10 @@ class HumanAgent(textworld.gym.Agent):
 
 # retains memory and formats prompts for the Agent
 class Memory:
-    def __init__(self, MEMORY_LEN=1, num_agents=1):
+    def __init__(self, MEMORY_LEN=1, num_agents=1, objective=True):
         self.MEMORY_LEN = MEMORY_LEN
         self.num_agents = num_agents
-
+        self.objective = objective
         self.memory = [deque(maxlen=self.MEMORY_LEN) for i in range(self.num_agents)]
 
     def clear(self, i):
@@ -133,9 +147,7 @@ class Memory:
             random.shuffle(out)
         return out
 
-    # obs is just the observation for the current index
-    # infos is a dict with every index
-    def getFormattedPrompt(self, i, obs, infos):
+    def clearExcessPunctuation(self, obs):
         # clear textworld opening art
         seq = "Welcome to TextWorld!"
         if seq in obs:
@@ -155,6 +167,13 @@ class Memory:
         if obs.startswith("\n") or obs.startswith(" "):
             idx = re.search("[^\n ]", obs).start()
             obs = obs[idx:]
+
+        return obs
+
+    # obs is just the observation for the current index
+    # infos is a dict with every index
+    def getFormattedPrompt(self, i, obs, infos):
+        obs = self.clearExcessPunctuation(obs)
 
         pastStates = ""
         for mem in self.memory[i]:
@@ -176,9 +195,13 @@ class Memory:
             inventoryStr = inventoryStr + " "
         # input_ = "{}{}{} You can only choose a single action. You take the action to ".format(obs, inventoryStr,
         #                                                    admissible_commands_str)
-        input_ = "{}{}{} You choose the action to ".format(obs, inventoryStr,
-                                                           admissible_commands_str)
+        input_ = f"{obs}{inventoryStr}{admissible_commands_str} You choose the action to "
         prompt = pastStates + input_
+
+        obj = self.clearExcessPunctuation(infos["objective"][i])
+        if self.objective and obj not in prompt:
+            prompt = obj + "\n" + prompt
+
         return prompt, input_
 
     def append(self, i, input_, action):
@@ -188,7 +211,7 @@ class Memory:
             self.memory[i].append(input_ + action)
 
 
-class VectorNLPAgent:
+class VectorNLPAgent():
     """ Hugging Face Transformer Agent """
 
     def __init__(self, buffer, num_agents=1, rank=0, world_size=1, useUnfinished=True, GAMMA=0.8, MEMORY_LEN=1, **kwargs) -> None:
@@ -221,6 +244,9 @@ class VectorNLPAgent:
         # self.rng = torch.Generator()
         # self.rng.manual_seed(self.rng.initial_seed() + rank)
 
+        # textworld is adding an extra turn at the end of the game
+        self.gameResettingExtraTurn = [False for i in range(self.num_agents)]
+
     def train(self):
         self.mode = "train"
         self.stats = {"max": defaultdict(list), "mean": defaultdict(list)}
@@ -239,8 +265,9 @@ class VectorNLPAgent:
     @property
     def infos_to_request(self) -> EnvInfos:
         return EnvInfos(description=True, inventory=True, admissible_commands=True,
-                        won=True, lost=True, last_action=True)
+                        won=True, lost=True, last_action=True, objective=True)
 
+    @torch.no_grad()
     def _discount_rewards(self):
         returnsList, advantagesList, finishedList = [], [], []
         for i in range(self.num_agents):
@@ -250,11 +277,16 @@ class VectorNLPAgent:
             fin = False
             for t in reversed(range(len(trans))):
                 # dont discount between episodes
-                rewards, _, _, values, done, _, _ = trans[t]
+                # rewards, _, _, values, done, _, _ = trans[t]
+                trans_dict = trans[t]
+                reward = trans_dict["reward"]
+                done = trans_dict["done"]
+                first_value = trans_dict["value"][0]
                 if done:
                     R = 0
-                R = rewards + self.GAMMA * R
-                adv = R - values
+                    fin=True
+                R = reward + self.GAMMA * R
+                adv = R - first_value
                 returns.append(R)
                 advantages.append(adv)
                 finished.append(fin)
@@ -264,6 +296,7 @@ class VectorNLPAgent:
             finishedList.append(finished[::-1])
         return returnsList, advantagesList, finishedList
 
+    @torch.no_grad()
     def fillBuffer(self, **kwargs):
         # get discounted returns and advantages across multiple actions. Currently not used
         returnsList, advantagesList, finishedList = self._discount_rewards()
@@ -274,16 +307,17 @@ class VectorNLPAgent:
             advantages = advantagesList[i]
             finished = finishedList[i]
             for t in reversed(range(len(trans))):
-                rew, prompt, action, next_value, done, value, logprob = trans[t]
-                ret_cross = returns[t]
-                adv_cross = advantages[t]
+                trans_dict = trans[t]
+                # rew, prompt, action, next_value, done, value, logprob = trans[t]
+                trans_dict["ret_cross"] = returns[t]
+                trans_dict["adv_cross"] = advantages[t]
                 fin = finished[t]
                 # returns and advantages across multiple actions
                 # ppo trainer computes returns and advantages across tokens within an action
                 # not sure if these are usefull
-                exper = (rew, prompt[0], action[0], next_value, ret_cross, adv_cross, value[0], logprob[0])
+                # exper = (rew, prompt[0], action[0], next_value, ret_cross, adv_cross, value[0], logprob[0])
                 if fin or self.useUnfinished:
-                    self.transitionBuffer.append(exper)
+                    self.transitionBuffer.append(trans_dict)
                 else:
                     unfinCount[i] += 1
         if self.useUnfinished:
@@ -292,6 +326,7 @@ class VectorNLPAgent:
             self.transitions = [self.transitions[i][-unfinCount[i]:] for i in range(self.num_agents)]
 
     # fill in results from action and train if time
+    @torch.no_grad()
     def report(self, rewards, score, done, infos, **kwargs):
         exTurn = False
         if "exTurn" in kwargs:
@@ -300,11 +335,14 @@ class VectorNLPAgent:
 
         for i in range(self.num_agents):
             if self.mode == "train":
+                if self.gameResettingExtraTurn[i]:
+                    self.gameResettingExtraTurn[i] = False
+                    continue
 
                 printFile(f"reward: {rewards[i]}", i, self.epoch, self.rank, self.num_agents)
 
                 if not exTurn:
-                    self.transitions[i][-1][0] = rewards[i]  # Update reward information. Was initialized as none
+                    self.transitions[i][-1]["reward"] = rewards[i]  # Update reward information. Was initialized as none
 
                 if not exTurn:
                     self.no_train_step[i] += 1
@@ -318,8 +356,9 @@ class VectorNLPAgent:
                     # mark last transition of episode
                     # if not exTurn:
                     if len(self.transitions[i]) != 0:
-                        self.transitions[i][-1][4] = True
+                        self.transitions[i][-1]["done"] = True
 
+    @torch.no_grad()
     def act(self, observation, score, done, infos, lightmodel, **kwargs):
         promptList = []
         inputList = []
@@ -332,6 +371,13 @@ class VectorNLPAgent:
 
         # infos is dict of lists
         for i in range(self.num_agents):
+            if infos["won"][i] or infos["lost"][i]:
+                printFile("placeholder for dummy turn", i, epoch, self.rank, self.num_agents)
+                promptList.append("placeholder")
+                inputList.append("placeholder")
+                self.gameResettingExtraTurn[i] = True
+                continue
+
             obs = observation[i]
 
             # Build agent's observation: feedback + look + inventory.
@@ -348,6 +394,10 @@ class VectorNLPAgent:
             # print(kwargs["exTurn"])
             if kwargs["exTurn"] == 1:
                 for i in range(self.num_agents):
+                    if infos["won"][i] or infos["lost"][i]:
+                        actionList.append("placeholder")
+                        continue
+
                     commands = infos["admissible_commands"][i]
                     commands = self.memory.filterAdmCmd(commands, i, infos, examine=False)
                     idx = np.random.choice(len(commands))
@@ -359,30 +409,6 @@ class VectorNLPAgent:
                     printFile("example turn", i, epoch, self.rank, self.num_agents)
                     printFile(action, i, epoch, self.rank, self.num_agents)
                     actionList.append(action)
-                return actionList
-
-        if "decisionTrans" in kwargs:
-            if kwargs["decisionTrans"]:
-                for i in range(self.num_agents):
-                    commands = infos["admissible_commands"][i]
-                    commands = self.memory.filterAdmCmd(commands, i, infos, examine=False)
-                    idx = np.random.choice(len(commands))
-                    action = commands[idx] + "."
-                    input_ = inputList[i]
-
-                    self.memory.append(i, input_, action)
-
-                    printFile(action, i, epoch, self.rank, self.num_agents)
-                    actionList.append(action)
-
-                for i in range(self.num_agents):
-                    if self.mode == "train":
-                        action = actionList[i]
-                        prompt = promptList[i]
-                        reward = None  # Reward will be set on the next call
-
-                        self.transitions[i].append(
-                            [reward, prompt, action, 0, False, [0], [0]])
                 return actionList
 
         model_input = lightmodel.tokenizer(promptList, add_special_tokens=True, return_tensors="pt", padding=True,
@@ -475,6 +501,9 @@ class VectorNLPAgent:
         # print("val logp ", values.shape, logprob.shape)
 
         for i in range(self.num_agents):
+            if infos["won"][i] or infos["lost"][i]:
+                actionList.append("placeholder")
+                continue
             # printFile("post process", i, epoch, self.rank, self.num_agents)
 
             inp = input_ids[i:i + 1]
@@ -512,28 +541,104 @@ class VectorNLPAgent:
             # doesn't need shifting since input ids is already 1 longer than values
             val = values[i:i + 1, :genLengths[i]]
             # print(values.shape, val.shape, i)
-            first_value = val[0, 0, 0]
+            
             # if i == 0:
             #     print("first value in action", first_value)
             #     # print(value)
             # printFile("first value in action " + str(first_value.item()), i, epoch, self.rank, self.num_agents)
-            printFile("token values " + str(values.tolist()), i, epoch, self.rank, self.num_agents)
+            printFile("token values " + str(val.tolist()), i, epoch, self.rank, self.num_agents)
             printFile("action probability " + str(torch.exp(torch.sum(logp)).item()), i, epoch, self.rank, self.num_agents)
             # only grab last token
             # value = values[i, genLengths[i] - 1, 0]
+            clean_action = clean_str(action)
+
+            self.memory.append(i, input_, clean_action)
+
+            # Reward will be set on report
+            # fill next value spot in transitions
+            first_value = val[0, 0, 0]
+            average_value = torch.mean(val)
+            # previous transition
+            if len(self.transitions[i]) != 0 and not self.transitions[i][-1]["done"]:
+                self.transitions[i][-1]["first_value_next"] = first_value.to(torch.device("cpu"))
+                
+            self.addTransition(i, prompt_tens=prompt_tens, action_tens=action_tens, logp=logp, val=val)
+
+            # removes non ascii chars and \
+            actionList.append(clean_action)
+        return actionList
+
+    @torch.no_grad()
+    def addTransition(self, i, reward=None, prompt_tens=None, action_tens=None, done=False, val=torch.tensor([[[0]]]), logp=torch.tensor([[[0]]])):
+        self.transitions[i].append(
+                {"reward": reward, "prompt_tens":prompt_tens.to(torch.device("cpu"))[0], "action_tens":action_tens.to(torch.device("cpu"))[0],
+                "first_value_next":torch.tensor(0, dtype=val.dtype),
+                "done":done, "value":val.to("cpu")[0], "logp":logp.to("cpu")[0]})
+
+
+class DecisionAgent(VectorNLPAgent):
+    def __init__(self, buffer, num_agents=1, rank=0, world_size=1, useUnfinished=True, GAMMA=0.8, MEMORY_LEN=1, **kwargs) -> None:
+        super().__init__(buffer, num_agents=num_agents, rank=rank, world_size=world_size, useUnfinishe=useUnfinished, GAMMA=GAMMA, MEMORY_LEN=MEMORY_LEN, **kwargs)
+
+    @torch.no_grad()
+    def act(self, observation, score, done, infos, lightmodel, **kwargs):
+        promptList = []
+        inputList = []
+        epoch = lightmodel.current_epoch
+        self.epoch = epoch
+        
+        if self.rng is None:
+            self.rng = torch.Generator(device=lightmodel.device)
+            self.rng.manual_seed(2061630618 + self.rank)
+
+        # infos is dict of lists
+        for i in range(self.num_agents):
+            if infos["won"][i] or infos["lost"][i]:
+                printFile("placeholder for dummy turn", i, epoch, self.rank, self.num_agents)
+                promptList.append("placeholder")
+                inputList.append("placeholder")
+                self.gameResettingExtraTurn[i] = True
+                continue
+
+            obs = observation[i]
+
+            # Build agent's observation: feedback + look + inventory.
+            prompt, input_ = self.memory.getFormattedPrompt(i, obs, infos)
+
+            printFile(input_, i, epoch, self.rank, self.num_agents)
+
+            promptList.append(prompt)
+            inputList.append(input_)
+
+        actionList = []
+        for i in range(self.num_agents):
+            if infos["won"][i] or infos["lost"][i]:
+                actionList.append("placeholder")
+                continue
+
+            commands = infos["admissible_commands"][i]
+            commands = self.memory.filterAdmCmd(commands, i, infos, examine=False)
+            idx = np.random.choice(len(commands))
+            action = commands[idx] + "."
+            input_ = inputList[i]
 
             self.memory.append(i, input_, action)
 
-            if self.mode == "train":
-                reward = None  # Reward will be set on the next call
-                # fill next value spot in transitions
-                if len(self.transitions[i]) != 0 and not self.transitions[i][-1][4]:
-                    self.transitions[i][-1][3] = first_value.to(torch.device("cpu"))
-                self.transitions[i].append(
-                    [reward, prompt_tens.to(torch.device("cpu")), action_tens.to(torch.device("cpu")),
-                    torch.tensor(0, dtype=val.dtype), False, val.to("cpu"), logp.to("cpu")])
-
-            # removes non ascii chars and \
-            action = clean_str(action)
+            printFile(action, i, epoch, self.rank, self.num_agents)
             actionList.append(action)
-        return actionList
+
+        for i in range(self.num_agents):
+            if self.mode == "train":
+                action = actionList[i]
+                prompt = promptList[i]
+                # Reward will be set on the next call
+                self.addTransition(i, prompt_tens=prompt, action_tens=action)
+
+                return actionList
+
+    @torch.no_grad()
+    def addTransition(self, i, reward=None, prompt_tens=None, action_tens=None, done=False, val=[0], logp=[[[0]]]):
+                self.transitions[i].append(
+                {"reward": reward, "prompt_tens":prompt_tens, "action_tens":action_tens,
+                "done":done, "value":val, "logp":logp})
+

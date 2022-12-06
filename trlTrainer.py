@@ -1,56 +1,16 @@
-# sepparates value head from the model so that it can be a drop in transformer where output_hidden_states is an option
-from pathlib import Path
-import numpy as np
-import torch.nn.functional as F
-from torch.optim import Adam
-import torch
-import collections
 import time
-import random
-from argparse import Namespace
 
-from datastructures import RLDataset
-from datastructures import ReplayBuffer
-from datastructures import LineDataset
-from datastructures import LineBuffer
-from datastructures import RLDatasetCollator
-
-import pytorch_lightning as pl
-import argparse
-from collections import OrderedDict, deque
-from typing import Tuple, List
-import torch.optim as optim
-from torch.optim import Optimizer
-from deepspeed.ops.adam import DeepSpeedCPUAdam
-from torch.utils.data import DataLoader
+import numpy as np
+import torch
 from torchinfo import summary
-
-from valueHead import ValueHead
-from games import VectorPlayer, getEnvs
-from agents import VectorNLPAgent
-
-from transformers import DataCollatorForLanguageModeling
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
 from transformers.deepspeed import HfDeepSpeedConfig
-# from lightning_transformers.utilities.deepspeed import enable_transformers_pretrained_deepspeed_sharding
-
-# from lightning_transformers.task.nlp.language_modeling import LanguageModelingTransformer
-
-from core import (logprobs_from_logits,
-                  whiten,
-                  clip_by_value,
-                  entropy_from_logits,
-                  flatten_dict,
-                  average_torch_dicts,
-                  stats_to_np,
-                  stack_dicts,
-                  add_suffix,
-                  WANDB_PADDING,
-                  pad_mask)
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
-# using deepspeed pytorch-lightning
-
+from games import getEnvs
 
 class AdaptiveKLController:
     """
@@ -150,7 +110,6 @@ class TRLTrainer(pl.LightningModule):
     def setup(self, stage=None):
         self.dschf = HfDeepSpeedConfig(self.trainer.strategy.config)
         # enable_transformers_pretrained_deepspeed_sharding(self)
-        from transformers import AutoModelForCausalLM, AutoTokenizer
         model_name = self.model_name
         if not hasattr(self, "model"):
             # gpt2 and gpt2-xl
@@ -158,6 +117,7 @@ class TRLTrainer(pl.LightningModule):
         if not hasattr(self, "ref_model"):
             if self.params["reference"]:
                 self.ref_model = AutoModelForCausalLM.from_pretrained(model_name)
+                self.ref_model.requires_grad_(False)
         if not hasattr(self, "tokenizer"):
             self.tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
             self.tokenizer.pad_token = self.tokenizer.unk_token
@@ -171,26 +131,9 @@ class TRLTrainer(pl.LightningModule):
             getEnvs()
             print("generated envs")
         torch.distributed.barrier()
-        
-        if self.params["single_game"]:
-            # agent = NLPAgent(buffer, humanTurns=0)
-            self.agent = VectorNLPAgent(self.agent_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
-                                   world_size=self.trainer.world_size, **self.agentKWArgs)
-            print("Training")
-            self.agent.train()  # Tell the agent it should update its parameters.
-            # player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
-            self.player = VectorPlayer(self.agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False,
-                                  num_agents=self.params["num_agents"],
-                                  rank=self.trainer.global_rank, world_size=self.trainer.world_size, **self.playerKWArgs)
 
-        else:
-            self.agent = VectorNLPAgent(self.agent_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
-                                   world_size=self.trainer.world_size, **self.agentKWArgs)
-            print("Training on 100 games")
-            self.agent.train()  # Tell the agent it should update its parameters.
-            self.player = VectorPlayer(self.agent, "./training_games/", verbose=False, num_agents=self.params["num_agents"],
-                                  rank=self.trainer.global_rank, world_size=self.trainer.world_size, **self.playerKWArgs)  # Each game will be seen 5 times.
-    
+        # player and agent setup by child class
+            
     def on_test_epoch_start(self):
         # train on the same data epochs per game times before generating a new set
         game_time = time.time()
@@ -214,6 +157,7 @@ class TRLTrainer(pl.LightningModule):
         # print("rank ", self.trainer.global_rank, " arrived at epoch barrier")
         torch.distributed.barrier()
 
+    @torch.no_grad()
     def compute_rewards(self, scores, logprobs, ref_logprobs):
         """Compute per token rewards from scores and KL-penalty."""
         rewards, non_score_rewards = [], []
@@ -231,12 +175,7 @@ class TRLTrainer(pl.LightningModule):
                 rewards.append(reward)
         return rewards, non_score_rewards
 
-    def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False, attention_mask=None, outputLogits=True):
-        return None
-
-    def batched_forward_pass(self, queries, responses, outputLogits=True, outputVals=True, outputRef=True):
-        return None
-
+    @torch.no_grad()
     def record_step_stats(self, **data):
         """Record training step statistics."""
         # kl_list = [logprobs - ref_logprobs for logprobs, ref_logprobs in zip(data['logprobs'], data['ref_logprobs'])]
@@ -245,9 +184,19 @@ class TRLTrainer(pl.LightningModule):
         kl_list_rew = self.kl_ctl_rew.kl_list
         mean_kl_rew = torch.mean(torch.stack([torch.sum(kl) for kl in kl_list_rew]))
 
-        mean_entropy = torch.mean(torch.stack([torch.sum(-log_probs) for log_probs in data['logprobs']]))
-        mean_non_score_reward = torch.mean(
-            torch.stack([torch.sum(non_score_reward).to("cpu") for non_score_reward in data['non_score_reward']]))
+        if 'logprobs' in data:
+            mean_entropy = torch.mean(torch.stack([torch.sum(-log_probs) for log_probs in data['logprobs']]))
+        else:
+            mean_entropy = 0
+        if 'non_score_reward' in data:
+            mean_non_score_reward = torch.mean(
+                torch.stack([torch.sum(non_score_reward).to("cpu") for non_score_reward in data['non_score_reward']]))
+        else:
+            mean_non_score_reward = 0
+        if 'scores' in data:
+            mean_score = torch.mean(torch.tensor(data['scores'], dtype=mean_kl.dtype))
+        else:
+            mean_score = 0
         stats = {
             'objective/kl': mean_kl,
             'objective/kl_dist': kl_list,
@@ -261,6 +210,7 @@ class TRLTrainer(pl.LightningModule):
             'objective/vf_coef': self.params['vf_coef'],
             'objective/entropy': mean_entropy,
             f'{self.alg_name}/mean_non_score_reward': mean_non_score_reward,
+            f'{self.alg_name}/mean_score': mean_score,
         }
                    
         self.kl_ctl.kl_list = []
@@ -271,16 +221,13 @@ class TRLTrainer(pl.LightningModule):
             stats[f'{self.alg_name}/{k}'] = torch.mean(v, axis=0)
         return stats
     
-def getTrainer(**kwargs):
-    SAVE_FREQUENCY = 4
-    from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
-    from pytorch_lightning.callbacks import ModelCheckpoint
-    checkpoint_callback = ModelCheckpoint(dirpath="checkpoints/", filename="ppo-{epoch:02d}",
+def getTrainer(devices=1, SAVE_FREQUENCY=4, alg_name="ppo"):
+    checkpoint_callback = ModelCheckpoint(dirpath="checkpoints/", filename= alg_name + "-{epoch:02d}",
                                           every_n_epochs=SAVE_FREQUENCY, save_weights_only=True)
     trainer = pl.Trainer(
         enable_checkpointing=True,
         logger=False,
-        accelerator='gpu', devices=8,
+        accelerator='gpu', devices=devices,
         max_epochs=500,
         precision=16,
         strategy=DeepSpeedStrategy(

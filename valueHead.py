@@ -11,7 +11,7 @@ import deepspeed
 class ValueHead(nn.Module):
     """The ValueHead class implements a head for GPT2 that returns a scalar for each output token."""
 
-    def __init__(self, n_embd=700, n_out=1, detach_head=False, layers=1, scale=2):
+    def __init__(self, n_embd=700, n_out=1, detach_head=False, layers=1, hidden_scale=2):
         super().__init__()
             
         self.detach_head = detach_head
@@ -19,7 +19,7 @@ class ValueHead(nn.Module):
         if layers == 1: # from trl
             self.summary = nn.Linear(n_embd, n_out)
         elif layers == 2: # from trlx make head
-            self.summary = nn.Sequential(nn.Linear(n_embd, int(n_embd * scale)), nn.ReLU(), nn.Linear(int(n_embd * scale), n_out))
+            self.summary = nn.Sequential(nn.Linear(n_embd, int(n_embd * hidden_scale)), nn.ReLU(), nn.Linear(int(n_embd * hidden_scale), n_out))
         else:
             raise NotImplementedError("Only 1 or 2 layers are supported for the value head.")
 
@@ -29,5 +29,6 @@ class ValueHead(nn.Module):
         else:
             output = hidden_states
 
+        # print("v head forward ", output.shape)
         output = self.summary(output)
         return output

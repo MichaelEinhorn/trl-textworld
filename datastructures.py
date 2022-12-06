@@ -1,15 +1,14 @@
 from collections import deque
 import numpy as np
 from torch.utils.data.dataset import IterableDataset
-from typing import Iterable, Callable
 import torch
-from core import padded_stack
+from core import padded_stack, stack_dicts_list
 
 class RejectionBuffer:
-    def __init__(self, min=True, rank=0, world_size=1):
+    def __init__(self, sortMax=True, rank=0, world_size=1):
         self.values = []
         self.text = []
-        self.min = min
+        self.sortMax = sortMax
         self.rank = rank
         self.world_size = world_size
 
@@ -19,9 +18,6 @@ class RejectionBuffer:
     def __iter__(self):
         return iter(zip(self.text, self.values))
     
-    def __len__(self):
-        return len(self.values)
-
     def append(self, t, v):
         self.values.append(v)
         self.text.append(t)
@@ -39,13 +35,15 @@ class RejectionBuffer:
                 idxs = torch.flip(idxs, [0])
 
             idxs = idxs[:num_frac]
+            tempText = []
+            tempVal = []
             for i in range(num_frac):
                 tempText.append(self.text[idxs[i]])
                 tempVal.append(self.values[idxs[i]])
 
         if threshType == "top n":
             idxs = torch.argsort(torch.stack(self.values))
-            if not self.min:
+            if self.sortMax:
                 # idxs = idxs[::-1]
                 idxs = torch.flip(idxs, [0])
             idxs = idxs[:p]
@@ -88,11 +86,13 @@ class RejectionBuffer:
 
             if threshType == "frac":
                 idxs = torch.argsort(torch.stack(self.values))
-                if not self.min:
+                if self.sortMax:
                     # idxs = idxs[::-1]
                     idxs = torch.flip(idxs, [0])
 
                 idxs = idxs[:num_frac]
+                tempText = []
+                tempVal = []
                 for i in range(num_frac):
                     tempText.append(self.text[idxs[i]])
                     tempVal.append(self.values[idxs[i]])
@@ -140,23 +140,6 @@ class RejectionBuffer:
         val = [self.values[idx] for idx in indices]
 
         return text, val
-
-
-class ExperienceSourceDataset(IterableDataset):
-    """
-    Implementation from PyTorch Lightning Bolts:
-    https://github.com/PyTorchLightning/pytorch-lightning-bolts/blob/master/pl_bolts/datamodules/experience_source.py
-    Basic experience source dataset. Takes a generate_batch function that returns an iterator.
-    The logic for the experience source and how the batch is generated is defined the Lightning model itself
-    """
-
-    def __init__(self, generate_batch: Callable):
-        self.generate_batch = generate_batch
-
-    def __iter__(self) -> Iterable:
-        iterator = self.generate_batch()
-        return iterator
-
 
 class ReplayBuffer:
     """
@@ -212,15 +195,16 @@ class RLDataset(IterableDataset):
 
         scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
         for i in range(len(scores)):
-            # padding matches the batches but this means padded querry + padded response is not padded (querry + response)
+            # padding matches the batches but this means padded query + padded response is not padded (query + response)
             model_input = torch.cat([queries[i], responses[i]])
             lengths = (queries[i].shape[0], responses[i].shape[0], model_input.shape[0])
             yield scores[i], queries[i], responses[i], model_input, lengths, values_next[i], ret_cross[i], adv_cross[i], logprobs[i], ref_logprobs[i], values[i], rewards[i], non_score_reward[i]
 
 
 class RLDatasetCollator():
-    def __init__(self, text_collator=None):
+    def __init__(self, text_collator=None, padReward=True):
         self.text_collator = text_collator
+        self.padReward = padReward
 
     def __call__(self, data):
         scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
@@ -230,21 +214,37 @@ class RLDatasetCollator():
         # print(logprobs[0].shape, ref_logprobs[0].shape)
         # print(len(logprobs), logprobs[0].shape)
         # print(len(queries), queries[0].shape)
-        
-        return (torch.tensor(scores),
-                self.text_collator(queries),
-                self.text_collator(responses),
-                self.text_collator(model_input),
-                torch.tensor(lengths),
-                torch.tensor(values_next),
-                torch.tensor(ret_cross),
-                torch.tensor(adv_cross),
-                padded_stack(logprobs, side="left"),
-                padded_stack(ref_logprobs, side="left"),
-                padded_stack(values, side="left"),
-                padded_stack(rewards, side="left"),
-                padded_stack(non_score_reward, side="left")
-                )
+        if self.padReward:
+            return (torch.tensor(scores),
+                    self.text_collator(queries),
+                    self.text_collator(responses),
+                    self.text_collator(model_input),
+                    torch.tensor(lengths),
+                    torch.tensor(values_next),
+                    torch.tensor(ret_cross),
+                    torch.tensor(adv_cross),
+                    padded_stack(logprobs, side="left"),
+                    padded_stack(ref_logprobs, side="left"),
+                    padded_stack(values, side="left"),
+                    padded_stack(rewards, side="left"),
+                    padded_stack(non_score_reward, side="left")
+                    )
+        else:
+            return (torch.tensor(scores),
+                    self.text_collator(queries),
+                    self.text_collator(responses),
+                    self.text_collator(model_input),
+                    torch.tensor(lengths),
+                    torch.tensor(values_next),
+                    torch.tensor(ret_cross),
+                    torch.tensor(adv_cross),
+                    padded_stack(logprobs, side="left"),
+                    padded_stack(ref_logprobs, side="left"),
+                    padded_stack(values, side="left"),
+                    torch.tensor(rewards),
+                    torch.tensor(non_score_reward)
+                    )
+
 
 class DecisionDataset(IterableDataset):
     def __init__(self, buffer, sample_size: int = 200):
@@ -260,11 +260,45 @@ class DecisionDatasetCollator():
     def __init__(self, text_collator=None):
         self.text_collator = text_collator
 
-    def __call__(self, input_ids):
+    def __call__(self, data):
+
         # for inp in input_ids:
             # print(inp.shape)
-        return self.text_collator(input_ids)
+        scores, ret_cross, input_ids = zip(*data)
+        return (
+            torch.tensor(scores),
+            torch.tensor(ret_cross),
+            self.text_collator(input_ids)
+        )
 
+# returns stacked dict of experiences
+class DictBuffer:
+    """
+    Replay Buffer for storing past experiences allowing the agent to learn from them
+    Args:
+        capacity: size of the buffer
+    """
+
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
+        
+    def clear(self):
+        self.buffer.clear()
+
+    def __len__(self):
+        return len(self.buffer)
+
+    def append(self, experience):
+        self.buffer.append(experience)
+
+    def sample(self, batch_size) -> dict:
+        indices = np.random.choice(len(self.buffer), batch_size, replace=False)
+        lines = [self.buffer[idx] for idx in indices]
+        output = stack_dicts_list(lines)
+
+        return output
+
+# returns lines of tuples
 class LineBuffer:
     """
     Replay Buffer for storing past experiences allowing the agent to learn from them
@@ -284,7 +318,7 @@ class LineBuffer:
     def append(self, experience):
         self.buffer.append(experience)
 
-    def sample(self, batch_size):
+    def sample(self, batch_size) -> list:
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         # original states, actions, rewards, dones, next_states
         lines = [self.buffer[idx] for idx in indices]
@@ -314,7 +348,7 @@ class RejectDataset(IterableDataset):
 
         scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
         for i in range(len(scores)):
-            # padding matches the batches but this means padded querry + padded response is not padded (querry + response)
+            # padding matches the batches but this means padded query + padded response is not padded (query + response)
             model_input = torch.cat([queries[i], responses[i]])
             lengths = (queries[i].shape[0], responses[i].shape[0], model_input.shape[0])
             yield scores[i], queries[i], responses[i], model_input, lengths, values_next[i], ret_cross[i], adv_cross[i], logprobs[i], ref_logprobs[i], values[i], rewards[i], non_score_reward[i], reject_scores[i]

@@ -1,50 +1,35 @@
-# sepparates value head from the model so that it can be a drop in transformer where output_hidden_states is an option
 from pathlib import Path
-import numpy as np
-import torch.nn.functional as F
-from torch.optim import Adam
-import torch
-import collections
 import time
-import random
-from argparse import Namespace
+from typing import List
 
-from agents import VectorNLPAgent
-from datastructures import RejectDataset
-from datastructures import RejectionBuffer
-from datastructures import ReplayBuffer
-from datastructures import LineBuffer
-from datastructures import RejectDatasetCollator
-
-import pytorch_lightning as pl
-from pytorch_lightning import seed_everything
-import argparse
-from typing import Tuple, List
-import torch.optim as optim
+import torch
+import torch.nn.functional as F
 from torch.optim import Optimizer
+from torch.utils.data import DataLoader
+import pytorch_lightning as pl
 from deepspeed.ops.adam import DeepSpeedCPUAdam
 from deepspeed.ops.adam import FusedAdam
-from torch.utils.data import DataLoader
+
 from torchinfo import summary
+from transformers import DataCollatorForLanguageModeling
 
 import trlTrainer
 from trlTrainer import TRLTrainer
-from games import VectorPlayer, getEnvs
 
-from transformers import DataCollatorForLanguageModeling
+from datastructures import RejectDataset
+from datastructures import RejectionBuffer
+from datastructures import DictBuffer
+from datastructures import RejectDatasetCollator
+from agents import VectorNLPAgent
+from games import VectorPlayer
 from games import GameReward, WinReward, LivingReward, InvalidReward, LetterReward
 
 from core import (logprobs_from_logits,
-                  whiten,
-                  clip_by_value,
                   entropy_from_logits,
                   flatten_dict,
-                  average_torch_dicts,
                   stats_to_np,
                   stats_to_cpu,
-                  stack_dicts,
-                  add_suffix,
-                  WANDB_PADDING,
+                  stack_stat_dicts,
                   pad_mask,
                   getKW)
 
@@ -81,10 +66,10 @@ class RejectionTuner(TRLTrainer):
         super().__init__(model_name, **params)
         self.trainer_buffer = None
         self.rejectRatio = 0
-        self.agent_buffer = ReplayBuffer(self.params["game_batch_size"])
+        self.agent_buffer = DictBuffer(self.params["game_batch_size"])
         
         gameRew = GameReward(value=1, num_agents=self.params["num_agents"])
-        gameRew = WinReward(value=100, num_agents=self.params["num_agents"], parentReward=gameRew)
+        gameRew = WinReward(value=2, num_agents=self.params["num_agents"], parentReward=gameRew)
         gameRew = InvalidReward(value=-.5, num_agents=self.params["num_agents"], parentReward=gameRew)
 
         letterRew = LetterReward(value=1, num_agents=self.params["num_agents"], letters=('e', 'E'))
@@ -99,10 +84,199 @@ class RejectionTuner(TRLTrainer):
 
     def __call__(self, input_ids, **kwargs):
         return self.forward(input_ids, **kwargs)
+
+    def setup(self, stage=None):
+        super().setup(stage=stage)
+        if self.params["single_game"]:
+            # agent = NLPAgent(buffer, humanTurns=0)
+            self.agent = VectorNLPAgent(self.agent_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
+                                   world_size=self.trainer.world_size, **self.agentKWArgs)
+            print("Training")
+            self.agent.train()  # Tell the agent it should update its parameters.
+            # player = Player(agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False)  # Dense rewards game.
+            self.player = VectorPlayer(self.agent, "./games/tw-rewardsDense_goalDetailed.z8", verbose=False,
+                                  num_agents=self.params["num_agents"],
+                                  rank=self.trainer.global_rank, world_size=self.trainer.world_size, **self.playerKWArgs)
+
+        else:
+            self.agent = VectorNLPAgent(self.agent_buffer, num_agents=self.params["num_agents"], rank=self.trainer.global_rank,
+                                   world_size=self.trainer.world_size, **self.agentKWArgs)
+            print("Training on 100 games")
+            self.agent.train()  # Tell the agent it should update its parameters.
+            self.player = VectorPlayer(self.agent, "./training_games/", verbose=False, num_agents=self.params["num_agents"],
+                                  rank=self.trainer.global_rank, world_size=self.trainer.world_size, **self.playerKWArgs)  # Each game will be seen 5 times.
+
+    def on_test_epoch_end(self):
+        self.saveStats(filename="stats/test.pt")
     
+    def on_train_epoch_end(self):
+        for ctl in [self.kl_ctl, self.kl_ctl_rew]:
+            if self.trainer.is_global_zero:
+                gathered_kl = [None for i in range(self.trainer.world_size)]
+            else:
+                gathered_kl = None
+            torch.distributed.gather_object(ctl.kl_list, object_gather_list=gathered_kl, dst=0)
+            ctl.kl_list = []
+            if self.trainer.is_global_zero:
+                for kl in gathered_kl:
+                    ctl.kl_list.extend(kl)
+
+            if self.current_epoch % self.params['log_freq'] == 0:
+                if self.trainer.is_global_zero:
+                    self.saveStats()
+
+        # stats are computed on process 1, update kl ctls on all processes
+        kl_values = [self.kl_ctl.value, self.kl_ctl_rew.value]
+        torch.distributed.broadcast_object_list(kl_values, src=0)
+        if not self.trainer.is_global_zero:
+            self.kl_ctl.updateValue(kl_values[0])
+            self.kl_ctl_rew.updateValue(kl_values[1])
+    
+    def saveStats(self, filename=None):
+        if filename is None:
+            filename = f"stats/{self.alg_name}_epoch_{self.current_epoch}-step_{self.global_step}.pt"
+        data, _scores_kl = self.trainer_buffer.sample(self.params['batch_size'])
+        scores, _, _, _, _, _, logprobs, ref_logprobs, _, _, non_score_reward = zip(*data)
+
+        timing = dict()
+        timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
+        timing[f'time/{self.alg_name}/game_time'] = self.game_time
+
+        timing['time/filesystem/save_model'] = self.saveModelTime
+        timing['time/filesystem/save_stats'] = self.saveStatTime
+
+        t = time.time()
+        train_stats = stack_stat_dicts(self.all_stats)
+        self.all_stats = []
+
+        train_stats['rejectRatio'] = self.rejectRatio
+        train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
+
+        # print("kl list ", len(self.kl_ctl_rew.kl_list))
+        stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
+                                               non_score_reward=non_score_reward, train_stats=train_stats)
+        stats = stats_to_np(stats)
+        timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
+
+        self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
+        self.kl_ctl_rew.update(stats['objective/kl_rew'],
+                                       self.params['log_freq'] * self.params['batch_size'] // self.params['epochs_per_game'])
+
+        flatparams = flatten_dict(self.params, prefix="params/")
+        flatcfg = flatten_dict(self.model.config.to_diff_dict(), prefix="config/")
+        # timing[f'time/{self.alg_name}/total'] = time.time() - t0
+        stats.update(timing)
+        stats.update(flatparams)
+        stats.update(flatcfg)
+        # print(stats)
+        t = time.time()
+        torch.save(stats, filename)
+        self.saveStatTime = time.time() - t
+
+    def runGame(self):
+        if self.params["clear_buffer_each_game"]:
+            self.trainer_buffer.clear()
+        self.agent_buffer.clear()
+
+        # self is passing the model to do forward passes with
+        self.player.runGame(self, self.params['game_batch_size'])
+        self.agent.fillBuffer()
+        torch.distributed.barrier()
+        
+        self.kl_ctl_rew.kl_list = []
+        # scores, queries, responses, values_next, ret_cross, adv_cross, values, logprobs = self.agent_buffer.sample(
+        #     self.params['game_batch_size'])
+
+        exp_dict = self.agent_buffer.sample(self.params['batch_size'])
+        
+        scores = exp_dict["reward"]
+        queries = exp_dict["prompt_tens"]
+        responses = exp_dict["action_tens"]
+        values_next = exp_dict["first_value_next"]
+        ret_cross = exp_dict["ret_cross"]
+        adv_cross = exp_dict["adv_cross"]
+        old_values = exp_dict["value"]
+        old_logprobs = exp_dict["logp"]
+
+        # first part of original step, gets old logprobs and ref logprobs
+
+        timing = dict()
+
+        t = time.time()
+        # logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
+        ref_logprobs = \
+        self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True)[
+            "ref_logprobs"]
+        
+        torch.distributed.barrier()
+        # if self.trainer.is_global_zero:
+        #     print("waiting batched forward")
+        #     temp_str = input()
+        # torch.distributed.barrier()
+
+        timing[f'time/{self.alg_name}/forward_pass'] = time.time() - t
+
+        # print("run game")
+        # print(values)
+
+        t = time.time()
+        rewards, non_score_reward = self.compute_rewards(scores, old_logprobs, ref_logprobs)
+        timing[f'time/{self.alg_name}/compute_rewards'] = time.time() - t
+
+        scores_kl = []
+        for i in range(self.params['game_batch_size']):
+            # query = queries[i]
+            # response = responses[i]
+            # use returns discounted across multiple transitions
+
+            score_kl = torch.tensor(ret_cross[i], device="cpu")
+            kl_rew = torch.sum(non_score_reward[i]).to("cpu")
+            score_kl += kl_rew
+            scores_kl.append(score_kl)
+            # use only current rewards
+            # scores_batch = scores[i]
+
+        for lineItem, score_kl in zip(zip(scores, queries, responses, values_next, ret_cross, adv_cross, old_logprobs, ref_logprobs,
+                            old_values, rewards, non_score_reward), scores_kl):
+            self.trainer_buffer.append(lineItem, score_kl)
+        
+        torch.distributed.barrier()
+        # if self.trainer.is_global_zero:
+        #     print("waiting fill buffer")
+        #     temp_str = input()
+        # torch.distributed.barrier()
+
+        start_n = len(self.trainer_buffer) * self.trainer.world_size
+        # global rejection is causing issues with mp, spawning a bunch of cuda processes and then deadlocking
+        # self.trainer_buffer.rejectGlobal(self.params["batch_size"] * self.trainer.world_size, threshType="top n")
+        self.trainer_buffer.reject(self.params["batch_size"], threshType="top n")
+        
+        reject_n = len(self.trainer_buffer)
+        if self.trainer.is_global_zero:
+            print("rejection ", start_n, " ", reject_n)
+            self.rejectRatio = torch.tensor(reject_n / start_n)
+        # else:
+        #     print("rejection rank ", self.trainer.global_rank, " ", start_n, " ", reject_n)
+            
+        torch.distributed.barrier()
+        # if self.trainer.is_global_zero:
+        #     print("waiting reject")
+        #     temp_str = input()
+        # torch.distributed.barrier()
+    def configure_optimizers(self) -> List[Optimizer]:
+        """ Initialize Adam optimizer"""
+        # self.optimizer = Adam(model.parameters(), lr=self.params['lr'])
+        # optimizer = Adam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
+        if self.deepspeed_offload:
+            optimizer = DeepSpeedCPUAdam(self.model.parameters(), lr=self.params['lr'])
+        else:
+            optimizer = FusedAdam(self.model.parameters(), lr=self.params['lr'])
+
+        return [optimizer]
+        
     def __dataloader(self) -> DataLoader:
         self.data_collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
-        self.trainer_buffer = RejectionBuffer(min=False, rank=self.trainer.global_rank,
+        self.trainer_buffer = RejectionBuffer(sortMax=True, rank=self.trainer.global_rank,
                                               world_size=self.trainer.world_size)
         dataset = RejectDataset(self.trainer_buffer, sample_size=self.params['batch_size'], rank=self.trainer.global_rank, world_size=self.trainer.world_size)
         dataloader = DataLoader(dataset=dataset,
@@ -115,16 +289,8 @@ class RejectionTuner(TRLTrainer):
         """Get train loader"""
         return self.__dataloader()
 
-    def configure_optimizers(self) -> List[Optimizer]:
-        """ Initialize Adam optimizer"""
-        # self.optimizer = Adam(model.parameters(), lr=self.params['lr'])
-        # optimizer = Adam(list(self.model.parameters()) + list(self.valueHead.parameters()), lr=self.params['lr'])
-        if self.deepspeed_offload:
-            optimizer = DeepSpeedCPUAdam(self.model.parameters(), lr=self.params['lr'])
-        else:
-            optimizer = FusedAdam(self.model.parameters(), lr=self.params['lr'])
-
-        return [optimizer]
+    def test_dataloader(self) -> DataLoader:
+        return self.__dataloader()
 
     # values variable for compatability
     def forward(self, input_ids, use_cache=False, past_key_values=None, outputVals=False, outputRef=False, attention_mask=None, outputLogits=True):
@@ -180,13 +346,6 @@ class RejectionTuner(TRLTrainer):
                 print("\r", i, "/", int(bs / fbs), sep="", end="", flush=True)
 
             with torch.no_grad():
-                # # logits, _, v = self.model(input_ids)
-                # lmOut = self.model(input_ids, output_hidden_states=True)
-                # # print(dir(lmOut))
-                # logits, hidden_state = lmOut.logits, lmOut.hidden_states[-1]
-                # v = self.valueHead(hidden_state)
-                # # ref_logits, _, _ = self.ref_model(input_ids)
-                # ref_logits = self.ref_model(input_ids).logits
                 input_ids = input_ids.to(self.device)
                 lmout = self.forward(input_ids, outputVals=outputVals, outputRef=outputRef, outputLogits=outputLogits, attention_mask=attention_mask)
 
@@ -204,7 +363,7 @@ class RejectionTuner(TRLTrainer):
                 # left pad
                 gen_len = len(response_batch[j])
                 if outputVals:
-                    all_values.append(v[j, -(gen_len+1):-1])
+                    all_values.append(v[j, -(gen_len + 1):-1])
                 # logits already shifted
                 if outputLogits:
                     all_logprobs.append(logprobs[j, -gen_len:])
@@ -251,174 +410,25 @@ class RejectionTuner(TRLTrainer):
         output["values"] = all_values
         output["ref_logprobs"] = all_ref_logprobs
         return output
-
-    def on_train_epoch_end(self):
-        for ctl in [self.kl_ctl, self.kl_ctl_rew]:
-            if self.trainer.is_global_zero:
-                gathered_kl = [None for i in range(self.trainer.world_size)]
-            else:
-                gathered_kl = None
-            torch.distributed.gather_object(ctl.kl_list, object_gather_list=gathered_kl, dst=0)
-            ctl.kl_list = []
-            if self.trainer.is_global_zero:
-                for kl in gathered_kl:
-                    ctl.kl_list.extend(kl)
-
-        if self.trainer.is_global_zero:
-            if self.current_epoch % self.params['log_freq'] == 0:
-                self.saveStats()
-
-        # stats are computed on process 1, update kl ctls on all processes
-        kl_values = [self.kl_ctl.value, self.kl_ctl_rew.value]
-        torch.distributed.broadcast_object_list(kl_values, src=0)
-        if not self.trainer.is_global_zero:
-            self.kl_ctl.updateValue(kl_values[0])
-            self.kl_ctl_rew.updateValue(kl_values[1])
             
-    def saveStats(self, filename=None):
-        if filename is None:
-            filename = f"stats/{self.alg_name}_epoch_{self.current_epoch}-step_{self.global_step}.pt"
-        data, scores_kl = self.trainer_buffer.sample(self.params['batch_size'])
-        scores, _, _, values_next, ret_cross, adv_cross, logprobs, ref_logprobs, values, rewards, non_score_reward = zip(*data)
 
-        timing = dict()
-        timing[f'time/{self.alg_name}/optimize_step'] = time.time() - self.epoch_time
-        timing[f'time/{self.alg_name}/game_time'] = self.game_time
-
-        timing['time/filesystem/save_model'] = self.saveModelTime
-        timing['time/filesystem/save_stats'] = self.saveStatTime
-
-        t = time.time()
-        train_stats = stack_dicts(self.all_stats)
-        self.all_stats = []
-
-        train_stats['rejectRatio'] = self.rejectRatio
-        train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
-
-        # print("kl list ", len(self.kl_ctl_rew.kl_list))
-        stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
-                                               non_score_reward=non_score_reward, train_stats=train_stats)
-        stats = stats_to_np(stats)
-        timing[f'time/{self.alg_name}/calc_stats'] = time.time() - t
-
-        self.kl_ctl.update(stats['objective/kl'], self.params['log_freq'] * self.params['batch_size'])
-        self.kl_ctl_rew.update(stats['objective/kl_rew'],
-                                       self.params['log_freq'] * self.params['batch_size'] // self.params[
-                                           f'epochs_per_game'])
-
-        flatparams = flatten_dict(self.params, prefix="params/")
-        flatcfg = flatten_dict(self.model.config.to_diff_dict(), prefix="config/")
-        # timing[f'time/{self.alg_name}/total'] = time.time() - t0
-        stats.update(timing)
-        stats.update(flatparams)
-        stats.update(flatcfg)
-        # print(stats)
-        t = time.time()
-        torch.save(stats, filename)
-        self.saveStatTime = time.time() - t
-
-    def runGame(self):
-        if self.params["clear_buffer_each_game"]:
-            self.trainer_buffer.clear()
-        self.agent_buffer.clear()
-
-        # self is passing the model to do forward passes with
-        self.player.runGame(self, self.params['game_batch_size'])
-        self.agent.fillBuffer()
-        torch.distributed.barrier()
-        
-        self.kl_ctl_rew.kl_list = []
-        scores, queries, responses, values_next, ret_cross, adv_cross, values, logprobs = self.agent_buffer.sample(
-            self.params['game_batch_size'])
-
-        # first part of original step, gets old logprobs and ref logprobs
-        bs = self.params['batch_size']
-
-        timing = dict()
-        t0 = time.time()
-
-        response_lengths = [len(r) for r in responses]
-
-        t = time.time()
-        # logprobs, ref_logprobs, values = self.batched_forward_pass(queries, responses)
-        ref_logprobs = \
-        self.batched_forward_pass(queries, responses, outputLogits=False, outputVals=False, outputRef=True)[
-            "ref_logprobs"]
-        
-        torch.distributed.barrier()
-        # if self.trainer.is_global_zero:
-        #     print("waiting batched forward")
-        #     temp_str = input()
-        # torch.distributed.barrier()
-
-        timing[f'time/{self.alg_name}/forward_pass'] = time.time() - t
-
-        # print("run game")
-        # print(values)
-
-        t = time.time()
-        rewards, non_score_reward = self.compute_rewards(scores, logprobs, ref_logprobs)
-        timing[f'time/{self.alg_name}/compute_rewards'] = time.time() - t
-
-        scores_kl = []
-        for i in range(self.params['game_batch_size']):
-            query = queries[i]
-            response = responses[i]
-            # use returns discounted across multiple transitions
-
-            score_kl = torch.tensor(ret_cross[i], device="cpu")
-            kl_rew = torch.sum(non_score_reward[i]).to("cpu")
-            score_kl += kl_rew
-            scores_kl.append(score_kl)
-            # use only current rewards
-            # scores_batch = scores[i]
-
-        for lineItem, score_kl in zip(zip(scores, queries, responses, values_next, ret_cross, adv_cross, logprobs, ref_logprobs,
-                            values, rewards, non_score_reward), scores_kl):
-            self.trainer_buffer.append(lineItem, score_kl)
-        
-        torch.distributed.barrier()
-        # if self.trainer.is_global_zero:
-        #     print("waiting fill buffer")
-        #     temp_str = input()
-        # torch.distributed.barrier()
-
-        start_n = len(self.trainer_buffer) * self.trainer.world_size
-        # global rejection is causing issues with mp, spawning a bunch of cuda processes and then deadlocking
-        # self.trainer_buffer.rejectGlobal(self.params["batch_size"] * self.trainer.world_size, threshType="top n")
-        self.trainer_buffer.reject(self.params["batch_size"], threshType="top n")
-        
-        reject_n = len(self.trainer_buffer)
-        if self.trainer.is_global_zero:
-            print("rejection ", start_n, " ", reject_n)
-            self.rejectRatio = torch.tensor(reject_n / start_n)
-        # else:
-        #     print("rejection rank ", self.trainer.global_rank, " ", start_n, " ", reject_n)
-            
-        torch.distributed.barrier()
-        # if self.trainer.is_global_zero:
-        #     print("waiting reject")
-        #     temp_str = input()
-        # torch.distributed.barrier()
-
-    # data is list of strings
     def training_step(self, batch, nb_batch):
-        scores, queries, responses, model_input, lengths, values_next, ret_cross, adv_cross, old_logprobs, ref_logprobs, values, rewards, non_score_reward, reject_scores = batch
+        scores, _queries, _responses, model_input, lengths, _values_next, _ret_cross, _adv_cross, old_logprobs, ref_logprobs, _values, _rewards, _non_score_reward, _reject_scores = batch
         fbs = scores.shape[0]
 
         loss_total = None
         input_ids = model_input["input_ids"]
         input_mask = pad_mask(input_ids, self.tokenizer.pad_token_id)
-        query_ids = queries["input_ids"]
-        query_mask = pad_mask(query_ids, self.tokenizer.pad_token_id)
-        response_ids = responses["input_ids"]
-        response_mask = pad_mask(response_ids, self.tokenizer.pad_token_id)
+        # query_ids = queries["input_ids"]
+        # query_mask = pad_mask(query_ids, self.tokenizer.pad_token_id)
+        # response_ids = responses["input_ids"]
+        # response_mask = pad_mask(response_ids, self.tokenizer.pad_token_id)
 
         lmout = self.forward(input_ids, outputVals=False, outputRef=False, attention_mask=input_mask)
         logits = lmout["logits"]
         logits_shifted = logits[:, :-1]
         targets = input_ids[:, 1:]
-        target_mask = input_mask[:, 1:]
+        # target_mask = input_mask[:, 1:]
 
         logprob = logprobs_from_logits(logits_shifted, targets)
 
@@ -435,11 +445,11 @@ class RejectionTuner(TRLTrainer):
         ce_loss = ce_loss_batch
 
         for i in range(fbs):
-            querry_len = lengths[i][0]
+            # query_len = lengths[i][0]
             gen_len = lengths[i][1]
-            total_len = lengths[i][2]
+            # total_len = lengths[i][2]
 
-            # remove left pad and querry
+            # remove left pad and query
             targ = targets[i:i+1, -gen_len:]
             logit = logits_shifted[i:i+1, -gen_len:]
             logp = logprob[i:i+1, -gen_len:]
@@ -516,7 +526,6 @@ class RejectionTuner(TRLTrainer):
 
 
 def train(model_name, single_game=False):
-    from time import time
 
     UPDATE_FREQUENCY = 128
     FORWARD_BATCH = 8
@@ -544,17 +553,17 @@ def train(model_name, single_game=False):
 
 
 if __name__ == "__main__":
-    import argparse
+    pl.seed_everything(2061630618)
+    # seed_everything(42)
 
-    seed_everything(42)
-
-    # model_name = 'gpt2'
-    # model_name = 'EleutherAI/gpt-j-6B'
-    # model_name = 'EleutherAI/gpt-neo-1.3B'
-    model_name = "EleutherAI/gpt-neox-20b"
-    single_game = False
+    MODEL_NAME = 'gpt2'
+    # MODEL_NAME = 'gpt2-medium'
+    # MODEL_NAME = 'EleutherAI/gpt-j-6B'
+    # MODEL_NAME = 'EleutherAI/gpt-neo-1.3B'
+    # MODEL_NAME = "EleutherAI/gpt-neox-20b"
+    SINGLE_GAME = False
 
     Path("stats").mkdir(parents=True, exist_ok=True)
     Path("checkpoints").mkdir(parents=True, exist_ok=True)
 
-    train(model_name, single_game=single_game)
+    train(model_name=MODEL_NAME, single_game=SINGLE_GAME)

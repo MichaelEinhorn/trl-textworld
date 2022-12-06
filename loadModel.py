@@ -1,15 +1,22 @@
+from time import time
+import pytorch_lightning as pl
+from pathlib import Path
+from torchinfo import summary
+from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
+from pytorch_lightning.callbacks import ModelCheckpoint
+
+from pytorch_lightning.utilities.deepspeed import (
+        convert_zero_checkpoint_to_fp32_state_dict
+    )
+
 from ppo import PPOTrainer
 from rejectionSample import RejectionTuner
 from decisionTrans import DecisionTuner
-import pytorch_lightning as pl
-from pytorch_lightning import seed_everything
-from pathlib import Path
-from torchinfo import summary
 
 if __name__ == "__main__":
     import argparse
     
-    seed_everything(42)
+    pl.seed_everything(42)
 
     model_name = 'gpt2'
     # model_name = 'EleutherAI/gpt-j-6B'
@@ -20,10 +27,6 @@ if __name__ == "__main__":
     Path("stats").mkdir(parents=True, exist_ok=True)
     Path("checkpoints").mkdir(parents=True, exist_ok=True)
     
-    from time import time
-
-    from pytorch_lightning.strategies.deepspeed import DeepSpeedStrategy
-    from pytorch_lightning.callbacks import ModelCheckpoint
     trainer = pl.Trainer(
         enable_checkpointing=True,
         logger=False,
@@ -35,10 +38,6 @@ if __name__ == "__main__":
             offload_optimizer=True,
             offload_parameters=True 
         )
-    )
-    
-    from pytorch_lightning.utilities.deepspeed import (
-        convert_zero_checkpoint_to_fp32_state_dict
     )
     # Lightning deepspeed has saved a directory instead of a file
     save_path = "checkpoints/ppo-epoch=02.ckpt" 

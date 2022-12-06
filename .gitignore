@@ -1,5 +1,8 @@
 output_dir/
 trajectories/
+trajectories*/
+stats/
+stats*/
 rewVals.csv
 games/
 testing_games/

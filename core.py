@@ -1,9 +1,8 @@
+import collections
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
-
-import collections
-import numpy as np
 
 WANDB_PADDING = -1
 
@@ -33,12 +32,27 @@ def flatten_list(tensor_list):
 def pad_mask(input_ids, pad_token):
     return torch.where(torch.eq(input_ids, pad_token), 0, 1)
 
-def stack_dicts(stats_dicts):
+def stack_stat_dicts(stats_dicts):
     """Stack the values of a dict."""
     results = dict()
     for k in stats_dicts[0]:
-        stats_list = [torch.flatten(d[k]) for d in stats_dicts]
-        results[k] = pad_sequence(stats_list, batch_first=True, padding_value=WANDB_PADDING)
+        # if stats_dicts[0][k] is a string
+        if isinstance(stats_dicts[0][k], str) or "config" in k or "param" in k:
+            results[k] = stats_dicts[0][k]
+        elif isinstance(stats_dicts[0][k], torch.Tensor):
+            stats_list = [torch.flatten(d[k]) for d in stats_dicts]
+            results[k] = pad_sequence(stats_list, batch_first=True, padding_value=WANDB_PADDING)
+        elif isinstance(stats_dicts[0][k], np.ndarray):
+            stats_list = [d[k].flatten() for d in stats_dicts]
+            results[k] = stats_list
+        else:
+            results[k] = [d[k] for d in stats_dicts]
+    return results
+
+def stack_dicts_list(dicts):
+    results = dict()
+    for k in dicts[0]:
+        results[k] = [d[k] for d in dicts]
     return results
 
 
@@ -100,36 +114,43 @@ def whitenBatch(valuesList, shift_mean=True, mean=None, var=None):
         whitenedList.append(whitened)
     return whitenedList
 
+def meanGlobal(tensor, rank=0, world_size=1):
+    """Calculate mean of tensor over all processes."""
+    if isinstance(tensor, list):
+        tensor = flatten_list(tensor)
+    device = tensor.device
+    size = torch.prod(torch.tensor(list(tensor.shape), device=device))
+    tensor = torch.sum(tensor)
+    # copilot added a clone, not sure if needed
+    tensor = tensor.clone()
+    torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
+    size = size.clone()
+    torch.distributed.all_reduce(size, op=torch.distributed.ReduceOp.SUM)
+    tensor = tensor.to(device)
+    size = size.to(device)
+    tensor /= size
+    return tensor
+
+def varGlobal(tensor, mean, rank=0, world_size=1):
+    """Calculate variance of tensor over all processes."""
+    if isinstance(tensor, list):
+        tensor = flatten_list(tensor)
+    device = tensor.device
+    size = torch.prod(torch.tensor(list(tensor.shape), device=device))
+    tensor = torch.sum((tensor - mean) ** 2)
+    tensor = tensor.clone()
+    torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
+    size = size.clone()
+    torch.distributed.all_reduce(size, op=torch.distributed.ReduceOp.SUM)
+    tensor = tensor.to(device)
+    size = size.to(device)
+    tensor /= size - 1
+    return tensor
 
 def whitenGlobal(valuesList, rank=0, world_size=1, shift_mean=True):
     """Whiten values."""
-    # single element is equal to mean
-    if len(valuesList) == 1 and valuesList[0].shape[1] == 1 and world_size == 1:
-        if not shift_mean:
-            return valuesList
-        return [torch.tensor(0, dtype=valuesList[0].dtype)]
-    
-    flatList = flatten_list(valuesList)
-    gatherList = None
-    if rank == 0:
-        gatherList = [None for i in range(world_size)]
-        
-    device = valuesList[0].device
-        
-    print("whiten gather", rank, flush=True)
-    torch.distributed.gather_object(flatList, object_gather_list=gatherList, dst=0)
-    
-    flatList = None
-    mean, var = 0, 0
-    if rank == 0:
-        for i in range(len(gatherList)):
-            gatherList[i] = gatherList[i].to(device)
-        flatList = torch.cat(gatherList)
-        mean, var = torch.mean(flatList), torch.var(flatList)
-    meanVar = torch.tensor([mean, var], device=device)
-    print("whiten broadcast", rank, flush=True)
-    torch.distributed.broadcast(meanVar, src=0)
-    mean, var = meanVar[0], meanVar[1]
+    mean = meanGlobal(valuesList, rank=rank, world_size=world_size)
+    var = varGlobal(valuesList, mean, rank=rank, world_size=world_size)
     
     return whitenBatch(valuesList, shift_mean=shift_mean, mean=mean, var=var)
 
@@ -175,7 +196,7 @@ def stats_to_np(stats_dict):
             new_dict[k] = v.detach().cpu().numpy()
         else:
             new_dict[k] = v
-        if np.isscalar(new_dict[k]):
+        if np.isscalar(new_dict[k]) and not isinstance(new_dict[k], str):
             new_dict[k] = float(new_dict[k])
     return new_dict
 

@@ -1,19 +1,17 @@
-import torch
 import os
 from glob import glob
-import gym
-import textworld.gym
 import subprocess
 import concurrent.futures
+import gym
+import textworld.gym
 import numpy as np
+import torch
 
 def getEnvs(download=True, remove=False):
     if remove:
         os.system('rm -rf games/')
         os.system('rm -rf training_games/')
         os.system('rm -rf testing_games/')
-
-    
 
     if not os.path.isdir('training_games'):
         if download:
@@ -31,35 +29,31 @@ def getEnvs(download=True, remove=False):
             
             i = 0
             with concurrent.futures.ThreadPoolExecutor(max_workers=cpu) as executor:
-                for result in executor.map(lambda x: subprocess.run(x, shell=True), programs):
+                for _ in executor.map(lambda x: subprocess.run(x, shell=True), programs):
                     print(f"\r{i}/100", end="", flush=True)
                     i += 1
             print("")
-            # os.system(
-            #     "tw-make tw-simple --rewards dense    --goal detailed --seed 18 --test --silent -f --output games/tw-rewardsDense_goalDetailed.z8")
-            # os.system(
-            #     "tw-make tw-simple --rewards balanced --goal detailed --seed 18 --test --silent -f --output games/tw-rewardsBalanced_goalDetailed.z8")
-            # os.system(
-            #     "tw-make tw-simple --rewards sparse   --goal detailed --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalDetailed.z8")
-            # os.system(
-            #     "tw-make tw-simple --rewards dense    --goal brief    --seed 18 --test --silent -f --output games/tw-rewardsDense_goalBrief.z8")
-            # os.system(
-            #     "tw-make tw-simple --rewards balanced --goal brief    --seed 18 --test --silent -f --output games/tw-rewardsBalanced_goalBrief.z8")
-            # os.system(
-            #     "tw-make tw-simple --rewards sparse   --goal brief    --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalBrief.z8")
-            # os.system(
-            #     "tw-make tw-simple --rewards sparse   --goal none     --seed 18 --test --silent -f --output games/tw-rewardsSparse_goalNone.z8")
 
+class TextWorldReward:
+    def reward(self, score, actionList, done, infos):
+        pass
+    
+    def reset(self):
+        pass
 
 # Reward is the gain/loss in score.
-class GameReward:
-    def __init__(self, value=1, num_agents=1):
+class GameReward(TextWorldReward):
+    def __init__(self, value=1, parentReward=None, num_agents=1):
         self.value=value
+        self.parentReward = parentReward
         self.num_agents=num_agents
         self.last_score = [0 for i in range(self.num_agents)]
-        
+
     def reward(self, score, actionList, done, infos):
         rew = [0 for i in range(self.num_agents)]
+        if self.parentReward is not None:
+            rew = self.parentReward.reward(score, actionList, done, infos)
+
         for i in range(self.num_agents):
             rew[i] = self.value * (score[i] - self.last_score[i])
             self.last_score[i] = score[i]
@@ -72,8 +66,8 @@ class GameReward:
         self.last_score = [0 for i in range(self.num_agents)]
 
 # adds value on win, subtracts on lose
-class WinReward:
-    def __init__(self, value=100, parentReward=None, num_agents=1):
+class WinReward(TextWorldReward):
+    def __init__(self, value=2, parentReward=None, num_agents=1):
         self.value = value
         self.parentReward = parentReward
         self.num_agents=num_agents
@@ -94,7 +88,7 @@ class WinReward:
         if self.parentReward is not None:
             self.parentReward.reset()
 
-class LivingReward:
+class LivingReward(TextWorldReward):
     def __init__(self, value=-0.1, parentReward=None, num_agents=1):
         self.value = value
         self.parentReward = parentReward
@@ -114,7 +108,7 @@ class LivingReward:
             self.parentReward.reset()
 
 # negatively rewards invalid actions
-class InvalidReward:
+class InvalidReward(TextWorldReward):
     def __init__(self, value=-1, parentReward=None, num_agents=1):
         self.value = value
         self.parentReward = parentReward
@@ -140,6 +134,26 @@ class InvalidReward:
 
     def reset(self):
         self.lastActionInfos = [None for i in range(self.num_agents)]
+        if self.parentReward is not None:
+            self.parentReward.reset()
+
+class RewardScalar(TextWorldReward):
+    def __init__(self, bias=0, scalar=1, parentReward=None, num_agents=1):
+        self.bias = bias
+        self.scalar = scalar
+        self.parentReward = parentReward
+        self.num_agents=num_agents
+
+    def reward(self, score, actionList, done, infos):
+        rew = [0 for i in range(self.num_agents)]
+        if self.parentReward is not None:
+            rew = self.parentReward.reward(score, actionList, done, infos)
+
+        for i in range(self.num_agents):
+            rew[i] = (rew[i] + self.bias) * self.scalar
+        return rew
+    
+    def reset(self):
         if self.parentReward is not None:
             self.parentReward.reset()
 
@@ -178,9 +192,9 @@ class VectorPlayer:
         if "exTurns" in kwargs:
             self.exTurns = kwargs["exTurns"]
             print("example turn rate ", self.exTurns)
-        self.decisionTrans = False
-        if "decisionTrans" in kwargs:
-            self.decisionTrans = kwargs["decisionTrans"]
+        # self.decisionTrans = False
+        # if "decisionTrans" in kwargs:
+        #     self.decisionTrans = kwargs["decisionTrans"]
 
         self.agent = agent
         self.num_agents = num_agents
@@ -255,10 +269,14 @@ class VectorPlayer:
                 if ex == 1:
                     stepsCompleted = 0
                 command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel, exTurn=ex)
-            elif self.decisionTrans:
-                command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel, decisionTrans=self.decisionTrans)
+            # elif self.decisionTrans:
+            #     command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel, decisionTrans=self.decisionTrans)
             else:
                 command = self.agent.act(self.obs, self.score, self.done, self.infos, lightmodel)
+
+            for cmd in command:
+                if cmd == "placeholder":
+                    stepsCompleted -= 1
 
             self.obs, self.score, self.done, self.infos = self.env.step(command)
             
@@ -297,7 +315,9 @@ class VectorPlayer:
 # human player
 if __name__ == "__main__":
     from agents import HumanAgent
-    getEnvs(download=False)
+    from pytorch_lightning import seed_everything
+    seed_everything(2061630618)
+    getEnvs(download=True)
 
     gameRew = GameReward(value=1, num_agents=1)
     gameRew = WinReward(value=100, num_agents=1, parentReward=gameRew)
