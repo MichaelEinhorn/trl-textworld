@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from transformers import top_k_top_p_filtering
 from torch.nn import Identity
 
-from core import logprobs_from_logits
+from core import logprobs_from_logits, qidx_from_qs
 
 import string
 import re
@@ -561,6 +561,7 @@ class VectorNLPAgent():
             # previous transition
             if len(self.transitions[i]) != 0 and not self.transitions[i][-1]["done"]:
                 self.transitions[i][-1]["first_value_next"] = first_value.to(torch.device("cpu"))
+                self.transitions[i][-1]["average_value_next"] = average_value.to(torch.device("cpu"))
                 
             self.addTransition(i, prompt_tens=prompt_tens, action_tens=action_tens, logp=logp, val=val)
 
@@ -572,7 +573,7 @@ class VectorNLPAgent():
     def addTransition(self, i, reward=None, prompt_tens=None, action_tens=None, done=False, val=torch.tensor([[[0]]]), logp=torch.tensor([[[0]]])):
         self.transitions[i].append(
                 {"reward": reward, "prompt_tens":prompt_tens.to(torch.device("cpu"))[0], "action_tens":action_tens.to(torch.device("cpu"))[0],
-                "first_value_next":torch.tensor(0, dtype=val.dtype),
+                "first_value_next":torch.tensor(0, dtype=val.dtype), "average_value_next":torch.tensor(0, dtype=val.dtype),
                 "done":done, "value":val.to("cpu")[0], "logp":logp.to("cpu")[0]})
 
 
@@ -638,7 +639,242 @@ class DecisionAgent(VectorNLPAgent):
 
     @torch.no_grad()
     def addTransition(self, i, reward=None, prompt_tens=None, action_tens=None, done=False, val=[0], logp=[[[0]]]):
-                self.transitions[i].append(
+        self.transitions[i].append(
                 {"reward": reward, "prompt_tens":prompt_tens, "action_tens":action_tens,
                 "done":done, "value":val, "logp":logp})
 
+class VectorNLPAgentQ(VectorNLPAgent):
+    def __init__(self, buffer, num_agents=1, rank=0, world_size=1, useUnfinished=True, GAMMA=0.8, MEMORY_LEN=1, **kwargs) -> None:
+        super().__init__(buffer, num_agents, rank, world_size, useUnfinished, GAMMA, MEMORY_LEN, **kwargs)
+
+    @torch.no_grad()
+    def act(self, observation, score, done, infos, lightmodel, **kwargs):
+        promptList = []
+        inputList = []
+        epoch = lightmodel.current_epoch
+        self.epoch = epoch
+        
+        if self.rng is None:
+            self.rng = torch.Generator(device=lightmodel.device)
+            self.rng.manual_seed(2061630618 + self.rank)
+
+        # infos is dict of lists
+        for i in range(self.num_agents):
+            if infos["won"][i] or infos["lost"][i]:
+                printFile("placeholder for dummy turn", i, epoch, self.rank, self.num_agents)
+                promptList.append("placeholder")
+                inputList.append("placeholder")
+                self.gameResettingExtraTurn[i] = True
+                continue
+
+            obs = observation[i]
+
+            # Build agent's observation: feedback + look + inventory.
+            prompt, input_ = self.memory.getFormattedPrompt(i, obs, infos)
+
+            printFile(input_, i, epoch, self.rank, self.num_agents)
+
+            promptList.append(prompt)
+            inputList.append(input_)
+
+        # does a random admissable action and adds to memory. Does not create a transition in experience buffer
+        actionList = []
+        if "exTurn" in kwargs:
+            # print(kwargs["exTurn"])
+            if kwargs["exTurn"] == 1:
+                for i in range(self.num_agents):
+                    if infos["won"][i] or infos["lost"][i]:
+                        actionList.append("placeholder")
+                        continue
+
+                    commands = infos["admissible_commands"][i]
+                    commands = self.memory.filterAdmCmd(commands, i, infos, examine=False)
+                    idx = np.random.choice(len(commands))
+                    action = commands[idx] + "."
+                    input_ = inputList[i]
+
+                    self.memory.append(i, input_, action)
+
+                    printFile("example turn", i, epoch, self.rank, self.num_agents)
+                    printFile(action, i, epoch, self.rank, self.num_agents)
+                    actionList.append(action)
+                return actionList
+
+        model_input = lightmodel.tokenizer(promptList, add_special_tokens=True, return_tensors="pt", padding=True,
+                                           return_attention_mask=True)
+        input_ids = model_input["input_ids"]
+        attention_mask = model_input["attention_mask"]
+        new_tokens = 0
+        next_token = None
+
+        values = 0
+
+        cache = None
+        # 0 is done, 1 is continuing
+        finished = torch.ones((self.num_agents,), device=lightmodel.getDevice())
+        # if the model has outputted a letter or number
+        # will not stop until after this has been flipped
+        startedLetter = torch.zeros((self.num_agents,), device=lightmodel.getDevice())
+        maxLen = 20
+        genLengths = [maxLen for i in range(self.num_agents)]
+
+        logprobList = []
+        valuesList = []
+        qidxList = []
+        # printFile("start generation loop", 0, epoch, self.rank, self.num_agents)
+        # while new_tokens == 0 or (new_tokens < maxLen and torch.sum(finished) > 0):
+        # generate all 20 tokens, because gpus need to call forward pass in sync for deepspeed
+        while new_tokens == 0 or (new_tokens < maxLen):
+            # run model
+            with torch.no_grad():
+                # get logits, only get last value
+                input_ids = input_ids.to(lightmodel.getDevice())
+                attention_mask = attention_mask.to(lightmodel.getDevice())
+                # input_ids = input_ids.to(lightmodel.model.device)
+                # printFile("new tokens " + str(new_tokens), 0, epoch, self.rank, self.num_agents)
+                if cache is None:
+                    lmout = lightmodel(input_ids, use_cache=True, outputVals=True, outputQs=True, attention_mask=attention_mask)
+                else:
+                    # print("cache ", input_ids[:, -1:].shape, len(cache), attention_mask.shape)
+                    lmout = lightmodel(input_ids[:, -1:], outputVals=True, outputQs=True, use_cache=True,
+                                       past_key_values=cache, attention_mask=attention_mask)
+                # printFile("finished forward", 0, epoch, self.rank, self.num_agents)
+
+                logits, cache, values = lmout["logits"], lmout["cache"], lmout["values"]
+                qs = lmout["qs"]
+
+                next_token_logits = logits[:, -1, :]
+                # next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=0, top_p=1)
+                probs = F.softmax(next_token_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1, generator=self.rng).squeeze(1)
+                input_ids = torch.cat([input_ids, next_token.unsqueeze(-1)], dim=-1)
+
+                # keep last token in att
+                # breaks indexing if this is after the finished check
+                attention_mask = torch.cat([attention_mask, finished.unsqueeze(-1)], dim=-1)
+
+                for i in range(self.num_agents):
+                    # only if not finished
+                    if finished[i] == 1:
+                        decodedToken = lightmodel.tokenizer.decode(next_token[i])
+                        if startedLetter[i] == 0 and hasLettersOrNum(decodedToken):
+                            startedLetter[i] = 1
+
+                        stopCond = False
+                        stopCond = stopCond or decodedToken in "\n.,?!:;"
+                        stopCond = stopCond or next_token[i] == lightmodel.tokenizer.eos_token
+
+                        stopCond = stopCond and startedLetter[i] == 1
+
+                        if stopCond:
+                            finished[i] = 0
+                            if next_token[i] == lightmodel.tokenizer.eos_token or "\n" in decodedToken:
+                                genLengths[i] = new_tokens
+                            else:
+                                genLengths[i] = new_tokens + 1
+                            
+
+                logprob = logprobs_from_logits(logits[:, -1:, :], next_token.unsqueeze(-1))
+                logprobList.append(logprob)
+                valuesList.append(values[:, -1, :])
+                qidx = [qidx_from_qs(q[:, -1:, :], next_token.unsqueeze(-1)) for q in qs]
+                qidx = reduce(torch.minimum, qidx)
+                qidxList.append(qidx)
+
+                new_tokens += 1
+
+                # printFile("next token " + str(next_token), 0, epoch, self.rank, self.num_agents)
+
+        # print("att shape ", input_ids.shape, attention_mask.shape)
+        # print(logprobList)
+        # print(valuesList)
+        logprob = torch.stack(logprobList, dim=1)
+        logprob = logprob.squeeze(2)
+        qidx = torch.stack(qidxList, dim=1)
+        qidx = qidx.squeeze(2).detach()
+        values = torch.stack(valuesList, dim=1)
+
+        # print("val logp ", values.shape, logprob.shape)
+
+        for i in range(self.num_agents):
+            if infos["won"][i] or infos["lost"][i]:
+                actionList.append("placeholder")
+                continue
+            # printFile("post process", i, epoch, self.rank, self.num_agents)
+
+            inp = input_ids[i:i + 1]
+            att = attention_mask[i]
+
+            # first and last nonzero index
+            start = torch.arange(att.shape[0], 0, -1, device=lightmodel.getDevice())
+            start = torch.argmax(start * att)
+            end = torch.arange(att.shape[0], device=lightmodel.getDevice())
+            end = torch.argmax(end * att)
+            # print("att ", i, att, start, end, genLengths[i])
+            # printFile("genlen, start, end", i, epoch)
+            # printFile(str(genLengths[i]) + ", " + str(start) + ", "  + str(end), i, epoch)
+            
+            # remove left and right pad
+            inp = inp[:, start:end + 1]
+            # split action and prompt
+            action_tens = inp[:, -genLengths[i]:]
+            prompt_tens = inp[:, :-genLengths[i]]
+            # print("inp act prompt shape ", inp.shape, action_tens.shape, prompt_tens.shape, i)
+
+            action = lightmodel.tokenizer.decode(action_tens[0, :])
+            input_ = inputList[i]
+
+            # doesn't need shifting since input ids is already 1 longer than logprob
+            logp = logprob[i:i + 1, :genLengths[i]]
+
+            # if i == 0:
+            #     print("action")
+            #     print(action)
+            printFile(clean_str(action), i, epoch, self.rank, self.num_agents)
+            if action != clean_str(action):
+                printFile("uncleaned action: " + action, i, epoch, self.rank, self.num_agents)
+
+            # doesn't need shifting since input ids is already 1 longer than values
+            val = values[i:i + 1, :genLengths[i]]
+            q_val = qidx[i:i + 1, :genLengths[i]]
+            # print(values.shape, val.shape, i)
+            
+            # if i == 0:
+            #     print("first value in action", first_value)
+            #     # print(value)
+            # printFile("first value in action " + str(first_value.item()), i, epoch, self.rank, self.num_agents)
+            printFile("token values " + str(val.tolist()), i, epoch, self.rank, self.num_agents)
+            printFile("token qs " + str(q_val.tolist()), i, epoch, self.rank, self.num_agents)
+            printFile("action probability " + str(torch.exp(torch.sum(logp)).item()), i, epoch, self.rank, self.num_agents)
+            # only grab last token
+            # value = values[i, genLengths[i] - 1, 0]
+            clean_action = clean_str(action)
+
+            self.memory.append(i, input_, clean_action)
+
+            # Reward will be set on report
+            # fill next value spot in transitions
+            first_value = val[0, 0, 0]
+            average_value = torch.mean(val)
+            first_q = q_val[0, 0]
+            average_q = torch.mean(q_val)
+            # previous transition
+            if len(self.transitions[i]) != 0 and not self.transitions[i][-1]["done"]:
+                self.transitions[i][-1]["first_value_next"] = first_value.to(torch.device("cpu"))
+                self.transitions[i][-1]["average_value_next"] = average_value.to(torch.device("cpu"))
+                self.transitions[i][-1]["first_q_next"] = first_q.to(torch.device("cpu"))
+                self.transitions[i][-1]["average_q_next"] = average_q.to(torch.device("cpu"))
+            
+            self.addTransition(i, prompt_tens=prompt_tens, action_tens=action_tens, logp=logp, val=val, q=q_val)
+
+            # removes non ascii chars and \
+            actionList.append(clean_action)
+        return actionList
+
+    @torch.no_grad()
+    def addTransition(self, i, reward=None, prompt_tens=None, action_tens=None, done=False, val=torch.tensor([[[0]]]), logp=torch.tensor([[[0]]]), q=None):
+        self.transitions[i].append(
+                {"reward": reward, "prompt_tens":prompt_tens.to(torch.device("cpu"))[0], "action_tens":action_tens.to(torch.device("cpu"))[0],
+                "first_value_next":torch.tensor(0, dtype=val.dtype), "average_value_next":torch.tensor(0, dtype=val.dtype),
+                "first_q_next":torch.tensor(0, dtype=val.dtype), "average_q_next":torch.tensor(0, dtype=val.dtype),
+                "done":done, "value":val.to("cpu")[0], "logp":logp.to("cpu")[0], "q":q.to("cpu")[0]})

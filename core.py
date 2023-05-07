@@ -78,6 +78,9 @@ def logprobs_from_logits(logits, labels):
     logpy = torch.gather(logp, 2, labels.unsqueeze(2)).squeeze(-1)
     return logpy
 
+def qidx_from_qs(qs, labels):
+    qidx = torch.gather(qs, -1, labels.unsqueeze(-1)).squeeze(-1)
+    return qidx
 
 def whiten(values, shift_mean=True, mean=None, var=None):
     """Whiten values."""
